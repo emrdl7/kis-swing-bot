@@ -29,7 +29,7 @@ class LLMClient:
 
     def chat(self, system: str, user: str, max_tokens: Optional[int] = None) -> str:
         """system + user 프롬프트로 단일 응답 반환."""
-        prompt = f"{user}" if not system else f"{user}"
+        prompt = user
         full_system = system
         return self._call(prompt, system=full_system)
 

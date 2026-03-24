@@ -37,7 +37,6 @@ def make_price_fetcher(kis: KisClient):
             try:
                 price_data = kis.get_price(sym)
                 ohlcv = kis.get_daily_ohlcv(sym, count=60)
-                from src.data.technical import compute_indicators
                 ind = compute_indicators(ohlcv)
 
                 cur_px = float(price_data.get("stck_prpr", 0) or 0)
