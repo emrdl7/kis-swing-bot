@@ -1,0 +1,207 @@
+"""웹 대시보드 서버 (FastAPI)."""
+from __future__ import annotations
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from datetime import datetime
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+import uvicorn
+
+from src.core import state_store
+from src.core.models import PositionState, SwingPosition, SwingCandidate
+
+app = FastAPI()
+
+
+def _pnl_color(pnl: float) -> str:
+    if pnl > 0:
+        return "#00c9a7"
+    if pnl < 0:
+        return "#ff6b6b"
+    return "#aaa"
+
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard():
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # 데이터 로드
+    raw_pos = state_store.load_positions()
+    raw_cands = state_store.load_candidates()
+
+    positions = [SwingPosition.from_dict(d) for d in raw_pos]
+    candidates = [SwingCandidate.from_dict(d) for d in raw_cands]
+
+    active = [p for p in positions if p.state != PositionState.CLOSED]
+    closed_today = [
+        p for p in positions
+        if p.state == PositionState.CLOSED
+        and p.close_time and p.close_time.strftime("%Y-%m-%d") == today
+    ]
+    active_cands = [c for c in candidates if not c.is_expired()]
+
+    # 오늘 PnL
+    daily_pnl = sum(
+        int((p.close_price - p.avg_price) * p.qty)
+        for p in closed_today
+        if p.close_price
+    )
+    pnl_color = _pnl_color(daily_pnl)
+
+    # ── 보유 포지션 테이블 ─────────────────────────────────────────
+    pos_rows = ""
+    for p in active:
+        # 현재가는 저장된 peak_price 기준 (실시간 아님)
+        est_pnl = p.pnl_pct(p.peak_price) if p.peak_price else 0
+        pc = _pnl_color(est_pnl)
+        trail = f"{int(p.trailing_stop_px):,}" if p.trailing_stop_px else "-"
+        pos_rows += f"""
+        <tr>
+          <td><b>{p.name}</b><br><small style="color:#888">{p.symbol}</small></td>
+          <td>{int(p.avg_price):,}</td>
+          <td>{int(p.target_price):,}</td>
+          <td>{int(p.stop_price):,}</td>
+          <td>{trail}</td>
+          <td style="color:{pc};font-weight:bold">{est_pnl:+.2f}%</td>
+          <td><span class="badge {p.state.value.lower()}">{p.state.value}</span></td>
+        </tr>"""
+
+    if not pos_rows:
+        pos_rows = '<tr><td colspan="7" style="text-align:center;color:#666">보유 포지션 없음</td></tr>'
+
+    # ── 후보 종목 테이블 ─────────────────────────────────────────
+    cand_rows = ""
+    for c in active_cands:
+        exp = c.expires_at.strftime("%m/%d") if c.expires_at else "-"
+        score_color = "#00c9a7" if c.consensus_score >= 0.7 else "#f9ca24"
+        cand_rows += f"""
+        <tr>
+          <td><b>{c.name}</b><br><small style="color:#888">{c.symbol}</small></td>
+          <td>{int(c.entry_low):,} ~ {int(c.entry_high):,}</td>
+          <td>{int(c.target_price):,}</td>
+          <td>{int(c.stop_price):,}</td>
+          <td style="color:{score_color}">{c.consensus_score:.0%}</td>
+          <td>{exp}</td>
+        </tr>"""
+
+    if not cand_rows:
+        cand_rows = '<tr><td colspan="6" style="text-align:center;color:#666">후보 종목 없음</td></tr>'
+
+    # ── 오늘 청산 내역 ─────────────────────────────────────────
+    closed_rows = ""
+    for p in closed_today:
+        if not p.close_price:
+            continue
+        pnl_amt = int((p.close_price - p.avg_price) * p.qty)
+        pnl_pct = p.pnl_pct(p.close_price)
+        pc = _pnl_color(pnl_pct)
+        reason = p.close_reason.value if p.close_reason else "-"
+        closed_rows += f"""
+        <tr>
+          <td><b>{p.name}</b><br><small style="color:#888">{p.symbol}</small></td>
+          <td>{int(p.avg_price):,}</td>
+          <td>{int(p.close_price):,}</td>
+          <td style="color:{pc};font-weight:bold">{pnl_pct:+.2f}%</td>
+          <td style="color:{pc}">{pnl_amt:+,}원</td>
+          <td>{reason}</td>
+        </tr>"""
+
+    if not closed_rows:
+        closed_rows = '<tr><td colspan="6" style="text-align:center;color:#666">오늘 청산 없음</td></tr>'
+
+    html = f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="refresh" content="30">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KIS Swing Bot</title>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{ background: #0f1117; color: #e0e0e0; font-family: -apple-system, sans-serif; padding: 20px; }}
+    h1 {{ font-size: 18px; color: #fff; margin-bottom: 4px; }}
+    .meta {{ color: #666; font-size: 12px; margin-bottom: 24px; }}
+    .summary {{ display: flex; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }}
+    .card {{ background: #1a1d27; border-radius: 10px; padding: 16px 22px; min-width: 140px; }}
+    .card-label {{ font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }}
+    .card-value {{ font-size: 22px; font-weight: 700; margin-top: 4px; }}
+    section {{ margin-bottom: 28px; }}
+    h2 {{ font-size: 13px; color: #aaa; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; border-bottom: 1px solid #2a2d3a; padding-bottom: 6px; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+    th {{ text-align: left; color: #666; font-weight: 500; padding: 6px 10px; border-bottom: 1px solid #2a2d3a; }}
+    td {{ padding: 8px 10px; border-bottom: 1px solid #1e2130; vertical-align: middle; }}
+    tr:last-child td {{ border-bottom: none; }}
+    tr:hover td {{ background: #1e2130; }}
+    .badge {{ padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }}
+    .entered {{ background: #1a3a5c; color: #60b8ff; }}
+    .trailing {{ background: #1a3a2a; color: #00c9a7; }}
+    .watching {{ background: #2a2a1a; color: #f9ca24; }}
+    .refresh {{ color: #555; font-size: 11px; margin-top: 20px; text-align: right; }}
+  </style>
+</head>
+<body>
+  <h1>KIS Swing Bot</h1>
+  <div class="meta">마지막 갱신: {now} &nbsp;·&nbsp; 30초마다 자동 새로고침</div>
+
+  <div class="summary">
+    <div class="card">
+      <div class="card-label">오늘 손익</div>
+      <div class="card-value" style="color:{pnl_color}">{daily_pnl:+,}원</div>
+    </div>
+    <div class="card">
+      <div class="card-label">보유 포지션</div>
+      <div class="card-value">{len(active)}종목</div>
+    </div>
+    <div class="card">
+      <div class="card-label">오늘 청산</div>
+      <div class="card-value">{len(closed_today)}건</div>
+    </div>
+    <div class="card">
+      <div class="card-label">감시 후보</div>
+      <div class="card-value">{len(active_cands)}종목</div>
+    </div>
+  </div>
+
+  <section>
+    <h2>보유 포지션</h2>
+    <table>
+      <thead><tr>
+        <th>종목</th><th>매수가</th><th>목표가</th><th>손절가</th><th>트레일링</th><th>수익률</th><th>상태</th>
+      </tr></thead>
+      <tbody>{pos_rows}</tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>감시 후보</h2>
+    <table>
+      <thead><tr>
+        <th>종목</th><th>진입 구간</th><th>목표가</th><th>손절가</th><th>신뢰도</th><th>만료</th>
+      </tr></thead>
+      <tbody>{cand_rows}</tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>오늘 청산 내역</h2>
+    <table>
+      <thead><tr>
+        <th>종목</th><th>매수가</th><th>매도가</th><th>수익률</th><th>손익</th><th>사유</th>
+      </tr></thead>
+      <tbody>{closed_rows}</tbody>
+    </table>
+  </section>
+
+  <div class="refresh">auto-refresh 30s</div>
+</body>
+</html>"""
+    return html
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="127.0.0.1", port=8080, log_level="warning")

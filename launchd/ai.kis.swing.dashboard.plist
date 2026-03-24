@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.kis.swing.dashboard</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/johyeonchang/services/kis-swing-bot/.venv/bin/python3</string>
+    <string>/Users/johyeonchang/services/kis-swing-bot/src/scripts/run_dashboard.py</string>
+  </array>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/johyeonchang/services/kis-swing-bot</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/johyeonchang/services/kis-swing-bot/logs/dashboard.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/johyeonchang/services/kis-swing-bot/logs/dashboard.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <key>PYTHONPATH</key>
+    <string>/Users/johyeonchang/services/kis-swing-bot</string>
+  </dict>
+</dict>
+</plist>
