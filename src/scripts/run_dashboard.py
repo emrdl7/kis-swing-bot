@@ -11,10 +11,26 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 import uvicorn
 
+from src.core.config import load_config
 from src.core import state_store
 from src.core.models import PositionState, SwingPosition, SwingCandidate
+from src.data.kis_client import KisClient
 
 app = FastAPI()
+_cfg = load_config()
+_kis = KisClient(_cfg.kis)
+
+
+def _fetch_prices(symbols: list[str]) -> dict[str, float]:
+    """종목코드 → 현재가 딕셔너리 반환. 실패 시 0."""
+    result = {}
+    for sym in symbols:
+        try:
+            data = _kis.get_price(sym)
+            result[sym] = float(data.get("stck_prpr", 0) or 0)
+        except Exception:
+            result[sym] = 0.0
+    return result
 
 
 def _pnl_color(pnl: float) -> str:
@@ -25,17 +41,25 @@ def _pnl_color(pnl: float) -> str:
     return "#aaa"
 
 
+def _in_zone_badge(price: float, low: float, high: float) -> str:
+    """현재가가 진입 구간 안에 있으면 뱃지 표시."""
+    slack = _cfg.screening.entry_zone_slack_pct / 100.0
+    if low * (1 - slack) <= price <= high * (1 + slack):
+        return '<span style="color:#00c9a7;font-weight:bold">● 진입구간</span>'
+    if price < low:
+        gap_pct = (low - price) / price * 100
+        return f'<span style="color:#888">▼ {gap_pct:.1f}% 아래</span>'
+    gap_pct = (price - high) / price * 100
+    return f'<span style="color:#f9ca24">▲ {gap_pct:.1f}% 위</span>'
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # 데이터 로드
-    raw_pos = state_store.load_positions()
-    raw_cands = state_store.load_candidates()
-
-    positions = [SwingPosition.from_dict(d) for d in raw_pos]
-    candidates = [SwingCandidate.from_dict(d) for d in raw_cands]
+    positions = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
+    candidates = [SwingCandidate.from_dict(d) for d in state_store.load_candidates()]
 
     active = [p for p in positions if p.state != PositionState.CLOSED]
     closed_today = [
@@ -45,54 +69,72 @@ def dashboard():
     ]
     active_cands = [c for c in candidates if not c.is_expired()]
 
-    # 오늘 PnL
+    # 현재가 일괄 조회
+    symbols = list({p.symbol for p in active} | {c.symbol for c in active_cands})
+    prices = _fetch_prices(symbols)
+
+    # 오늘 PnL (청산 기준)
     daily_pnl = sum(
         int((p.close_price - p.avg_price) * p.qty)
-        for p in closed_today
-        if p.close_price
+        for p in closed_today if p.close_price
+    )
+    # 미실현 PnL 합산
+    unrealized_pnl = sum(
+        int((prices.get(p.symbol, p.avg_price) - p.avg_price) * p.qty)
+        for p in active
     )
     pnl_color = _pnl_color(daily_pnl)
+    unr_color = _pnl_color(unrealized_pnl)
 
-    # ── 보유 포지션 테이블 ─────────────────────────────────────────
+    # ── 보유 포지션 테이블 ──────────────────────────────────────────
     pos_rows = ""
     for p in active:
-        # 현재가는 저장된 peak_price 기준 (실시간 아님)
-        est_pnl = p.pnl_pct(p.peak_price) if p.peak_price else 0
-        pc = _pnl_color(est_pnl)
+        cur_px = prices.get(p.symbol, 0)
+        pnl_pct = p.pnl_pct(cur_px) if cur_px else 0
+        pnl_amt = int((cur_px - p.avg_price) * p.qty) if cur_px else 0
+        pc = _pnl_color(pnl_pct)
         trail = f"{int(p.trailing_stop_px):,}" if p.trailing_stop_px else "-"
+        cur_str = f"{int(cur_px):,}" if cur_px else "-"
         pos_rows += f"""
         <tr>
           <td><b>{p.name}</b><br><small style="color:#888">{p.symbol}</small></td>
           <td>{int(p.avg_price):,}</td>
+          <td style="color:#fff;font-weight:bold">{cur_str}</td>
           <td>{int(p.target_price):,}</td>
           <td>{int(p.stop_price):,}</td>
           <td>{trail}</td>
-          <td style="color:{pc};font-weight:bold">{est_pnl:+.2f}%</td>
+          <td style="color:{pc};font-weight:bold">{pnl_pct:+.2f}%<br>
+            <small style="color:{pc}">{pnl_amt:+,}원</small></td>
           <td><span class="badge {p.state.value.lower()}">{p.state.value}</span></td>
         </tr>"""
 
     if not pos_rows:
-        pos_rows = '<tr><td colspan="7" style="text-align:center;color:#666">보유 포지션 없음</td></tr>'
+        pos_rows = '<tr><td colspan="8" style="text-align:center;color:#666">보유 포지션 없음</td></tr>'
 
-    # ── 후보 종목 테이블 ─────────────────────────────────────────
+    # ── 후보 종목 테이블 ──────────────────────────────────────────
     cand_rows = ""
     for c in active_cands:
         exp = c.expires_at.strftime("%m/%d") if c.expires_at else "-"
         score_color = "#00c9a7" if c.consensus_score >= 0.7 else "#f9ca24"
+        cur_px = prices.get(c.symbol, 0)
+        cur_str = f"{int(cur_px):,}" if cur_px else "-"
+        zone_badge = _in_zone_badge(cur_px, c.entry_low, c.entry_high) if cur_px else "-"
         cand_rows += f"""
         <tr>
           <td><b>{c.name}</b><br><small style="color:#888">{c.symbol}</small></td>
+          <td style="color:#fff;font-weight:bold">{cur_str}</td>
           <td>{int(c.entry_low):,} ~ {int(c.entry_high):,}</td>
           <td>{int(c.target_price):,}</td>
           <td>{int(c.stop_price):,}</td>
+          <td>{zone_badge}</td>
           <td style="color:{score_color}">{c.consensus_score:.0%}</td>
           <td>{exp}</td>
         </tr>"""
 
     if not cand_rows:
-        cand_rows = '<tr><td colspan="6" style="text-align:center;color:#666">후보 종목 없음</td></tr>'
+        cand_rows = '<tr><td colspan="8" style="text-align:center;color:#666">후보 종목 없음</td></tr>'
 
-    # ── 오늘 청산 내역 ─────────────────────────────────────────
+    # ── 오늘 청산 내역 ──────────────────────────────────────────
     closed_rows = ""
     for p in closed_today:
         if not p.close_price:
@@ -150,8 +192,12 @@ def dashboard():
 
   <div class="summary">
     <div class="card">
-      <div class="card-label">오늘 손익</div>
+      <div class="card-label">오늘 실현손익</div>
       <div class="card-value" style="color:{pnl_color}">{daily_pnl:+,}원</div>
+    </div>
+    <div class="card">
+      <div class="card-label">미실현손익</div>
+      <div class="card-value" style="color:{unr_color}">{unrealized_pnl:+,}원</div>
     </div>
     <div class="card">
       <div class="card-label">보유 포지션</div>
@@ -171,7 +217,7 @@ def dashboard():
     <h2>보유 포지션</h2>
     <table>
       <thead><tr>
-        <th>종목</th><th>매수가</th><th>목표가</th><th>손절가</th><th>트레일링</th><th>수익률</th><th>상태</th>
+        <th>종목</th><th>매수가</th><th>현재가</th><th>목표가</th><th>손절가</th><th>트레일링</th><th>수익률 / 손익</th><th>상태</th>
       </tr></thead>
       <tbody>{pos_rows}</tbody>
     </table>
@@ -181,7 +227,7 @@ def dashboard():
     <h2>감시 후보</h2>
     <table>
       <thead><tr>
-        <th>종목</th><th>진입 구간</th><th>목표가</th><th>손절가</th><th>신뢰도</th><th>만료</th>
+        <th>종목</th><th>현재가</th><th>진입 구간</th><th>목표가</th><th>손절가</th><th>진입여부</th><th>신뢰도</th><th>만료</th>
       </tr></thead>
       <tbody>{cand_rows}</tbody>
     </table>
