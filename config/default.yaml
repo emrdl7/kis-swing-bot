@@ -1,0 +1,47 @@
+# kis-swing-bot 기본 설정 (민감 정보는 config/.env 에)
+
+kis:
+  base_url: "https://openapi.koreainvestment.com:9443"
+  # app_key / app_secret / account_no / account_type → .env
+
+trading:
+  position_size_pct: 0.30        # 종목당 투자 비중 (30%)
+  max_positions: 3               # 최대 동시 보유 종목
+  max_daily_loss_pct: 5.0        # 일일 최대 손실 한도 (%)
+  commission_pct: 0.015          # 거래 수수료 (%)
+
+exit:
+  take_profit_pct: 4.0           # 목표 수익률 (%)
+  stop_loss_pct: 2.5             # 손절 기준 (%)
+  trailing_activate_pct: 2.0     # 트레일링 스탑 활성화 시점 (%)
+  trailing_pct: 1.5              # 트레일링 스탑 폭 (%)
+  eod_sell_hhmm: 1510            # 장 마감 전 강제 청산 시각 (HHMM)
+  eod_sell_enabled: false        # 스윙이므로 기본 비활성
+
+screening:
+  max_candidates: 5              # 발굴 후 최대 후보 수
+  min_market_cap_bn: 500         # 최소 시가총액 (억원)
+  min_volume: 500000             # 최소 거래량
+  min_trade_amount: 5000000000   # 최소 거래대금 (50억)
+  entry_zone_slack_pct: 1.0      # 진입 범위 여유 (±%)
+  entry_expiry_days: 3           # 후보 유효기간 (일)
+
+agents:
+  model: "claude-opus-4-6"
+  max_tokens: 2000
+  debate_rounds: 2               # 토론 라운드 수
+  num_agents: 3                  # 참여 에이전트 수
+
+notification:
+  discord_enabled: true
+  # discord_webhook_url → .env
+
+dart:
+  # api_key → .env
+  lookback_days: 1               # 당일 공시만
+
+news:
+  max_age_hours: 24              # 당일 뉴스만
+  sources:
+    - "https://feeds.finance.naver.com/api/rss/marketNews.nhn"
+    - "https://www.hankyung.com/feed/all-news"
