@@ -30,9 +30,6 @@ def main() -> None:
         log.error("KIS_APP_KEY 설정 없음. config/.env 확인")
         sys.exit(1)
 
-    if not cfg.anthropic_api_key:
-        log.warning("ANTHROPIC_API_KEY 없음 — LLM 기능 비활성")
-
     monitor = MarketMonitor(cfg, dry_run=args.dry_run)
     monitor.run_forever()
 

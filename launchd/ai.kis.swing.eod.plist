@@ -8,7 +8,7 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/python3</string>
+    <string>/Users/johyeonchang/services/kis-swing-bot/.venv/bin/python3</string>
     <string>/Users/johyeonchang/services/kis-swing-bot/src/scripts/run_eod_report.py</string>
   </array>
 
