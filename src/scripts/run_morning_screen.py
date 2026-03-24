@@ -113,8 +113,11 @@ def main() -> None:
         "news_summary": news_text[:500],
     }
 
-    new_candidates = engine.run(context)
+    new_candidates, transcript = engine.run(context)
     log.info("신규 발굴 후보: %d개", len(new_candidates))
+
+    # 토론 전 과정 Apple Notes 저장
+    apple_notes.report_debate(transcript, today)
 
     # 5) 기존 후보 + 신규 후보 병합 (중복 제거)
     existing_symbols = {c.symbol for c in active_candidates}

@@ -1,8 +1,6 @@
 """멀티 에이전트 토론 엔진 — 2라운드 토론 후 모더레이터 최종 결정."""
 from __future__ import annotations
-import json
 import logging
-from collections import defaultdict
 from datetime import datetime, timedelta
 
 from src.agents.base_agent import BaseAgent, extract_json
@@ -11,6 +9,12 @@ from src.core.config import ScreeningConfig
 from src.core.models import AgentOpinion, DebateResult, SwingCandidate
 
 log = logging.getLogger(__name__)
+
+_AGENT_LABEL = {
+    "news_agent": "📰 뉴스 에이전트",
+    "theme_agent": "🏷 테마/공시 에이전트",
+    "technical_agent": "📊 기술적 분석 에이전트",
+}
 
 
 class DebateEngine:
@@ -32,34 +36,58 @@ class DebateEngine:
         self.llm = llm
         self.screening_cfg = screening_cfg
         self.num_rounds = num_rounds
+        self._transcript: list[str] = []
 
     # ── 공개 API ──────────────────────────────────────────────────────────
 
-    def run(self, context: dict) -> list[SwingCandidate]:
-        """토론 실행 → SwingCandidate 목록 반환."""
+    def run(self, context: dict) -> tuple[list[SwingCandidate], str]:
+        """토론 실행.
+
+        Returns:
+            (candidates, transcript_text)
+        """
+        self._transcript = []
         today = context.get("today", datetime.now().strftime("%Y-%m-%d"))
+        self._log(f"# {today} 스윙봇 종목발굴 토론 보고서\n")
 
         # Round 0: 독립적 분석
+        self._log("## ▶ Round 0 — 독립 분석\n각 에이전트가 독립적으로 종목을 추천합니다.\n")
         log.info("=== 토론 Round 0: 독립 분석 시작 ===")
         all_opinions: dict[str, list[AgentOpinion]] = {}
         for agent in self.agents:
             ops = agent.analyze(context)
             all_opinions[agent.name] = ops
             log.info("  [%s] %d개 의견", agent.name, len(ops))
+            self._log_opinions(agent.name, ops)
 
         if self.num_rounds >= 1:
             # Round 1: cross-review
+            self._log("## ▶ Round 1 — 교차 검토\n다른 에이전트의 의견을 본 후 재검토합니다.\n")
             log.info("=== 토론 Round 1: 교차 검토 시작 ===")
             all_opinions = self._cross_review(all_opinions, context)
 
         # Round 2: 모더레이터 최종 결정
+        self._log("## ▶ Round 2 — 모더레이터 최종 결정\n")
         log.info("=== 토론 Round 2: 모더레이터 결정 ===")
         debate_results = self._moderate(all_opinions, today)
 
-        # SwingCandidate 변환
+        # 최종 결과 기록
+        self._log("## ✅ 최종 선정 종목\n")
+        for r in debate_results:
+            tp_pct = (r.target_price / r.entry_high - 1) * 100
+            sl_pct = (1 - r.stop_price / r.entry_low) * 100
+            self._log(
+                f"### {r.name} ({r.symbol})\n"
+                f"- 신뢰도: {r.consensus_score:.0%}  |  찬성: {', '.join(r.supporting_agents)}\n"
+                f"- 진입 구간: {int(r.entry_low):,} ~ {int(r.entry_high):,}원\n"
+                f"- 목표가: {int(r.target_price):,}원 (+{tp_pct:.1f}%)\n"
+                f"- 손절가: {int(r.stop_price):,}원 (-{sl_pct:.1f}%)\n"
+                f"- 선정 근거: {r.final_rationale}\n"
+            )
+
         candidates = self._to_candidates(debate_results)
         log.info("최종 후보: %d개", len(candidates))
-        return candidates
+        return candidates, "\n".join(self._transcript)
 
     # ── 내부 메서드 ────────────────────────────────────────────────────────
 
@@ -68,16 +96,13 @@ class DebateEngine:
         round0: dict[str, list[AgentOpinion]],
         context: dict,
     ) -> dict[str, list[AgentOpinion]]:
-        """각 에이전트가 다른 에이전트 의견을 보고 재검토."""
-        # 전체 의견을 텍스트로 정리
-        summary = self._opinions_to_text(round0)
         updated: dict[str, list[AgentOpinion]] = {}
 
         for agent in self.agents:
             others_text = []
             for name, ops in round0.items():
                 if name != agent.name:
-                    others_text.append(f"\n[{name} 의견]\n" + self._opinions_mini(ops))
+                    others_text.append(f"\n[{_AGENT_LABEL.get(name, name)} 의견]\n" + self._opinions_mini(ops))
             other_views = "\n".join(others_text)
 
             user_msg = f"""다른 분석가들의 의견을 검토한 후, 당신의 최종 추천을 업데이트하십시오.
@@ -95,6 +120,7 @@ class DebateEngine:
             refined = agent._parse_opinions(raw)
             updated[agent.name] = refined if refined else round0[agent.name]
             log.info("  [%s] Round1 후 %d개 의견", agent.name, len(updated[agent.name]))
+            self._log_opinions(agent.name, updated[agent.name], round_label="Round 1 재검토 후")
 
         return updated
 
@@ -103,7 +129,6 @@ class DebateEngine:
         all_opinions: dict[str, list[AgentOpinion]],
         today: str,
     ) -> list[DebateResult]:
-        """모더레이터 역할: 전체 의견을 종합하여 최종 종목 결정."""
         summary = self._opinions_to_text(all_opinions)
 
         system = """당신은 한국 주식 스윙 트레이딩 전문 심판관(Moderator)입니다.
@@ -145,6 +170,7 @@ class DebateEngine:
         data = extract_json(raw)
         if not data:
             log.error("모더레이터 응답 파싱 실패:\n%s", raw[:300])
+            self._log(f"[모더레이터 오류] 파싱 실패\n{raw[:300]}\n")
             return []
         if isinstance(data, dict):
             data = [data]
@@ -169,7 +195,6 @@ class DebateEngine:
         return results
 
     def _to_candidates(self, results: list[DebateResult]) -> list[SwingCandidate]:
-        """DebateResult → SwingCandidate 변환."""
         max_cands = self.screening_cfg.max_candidates
         expiry_days = self.screening_cfg.entry_expiry_days
         now = datetime.now()
@@ -189,6 +214,34 @@ class DebateEngine:
                 expires_at=now + timedelta(days=expiry_days),
             ))
         return candidates
+
+    # ── 트랜스크립트 헬퍼 ─────────────────────────────────────────────────
+
+    def _log(self, text: str) -> None:
+        self._transcript.append(text)
+
+    def _log_opinions(
+        self,
+        agent_name: str,
+        ops: list[AgentOpinion],
+        round_label: str = "",
+    ) -> None:
+        label = _AGENT_LABEL.get(agent_name, agent_name)
+        suffix = f" ({round_label})" if round_label else ""
+        self._log(f"### {label}{suffix}\n")
+        if not ops:
+            self._log("추천 종목 없음\n")
+            return
+        for op in ops:
+            tp_pct = (op.target_price / op.entry_high - 1) * 100 if op.entry_high else 0
+            sl_pct = (1 - op.stop_price / op.entry_low) * 100 if op.entry_low else 0
+            self._log(
+                f"**{op.name} ({op.symbol})**  conviction: {op.conviction:.0%}\n"
+                f"- 진입: {int(op.entry_low):,} ~ {int(op.entry_high):,}원\n"
+                f"- 목표: {int(op.target_price):,}원 (+{tp_pct:.1f}%)  "
+                f"손절: {int(op.stop_price):,}원 (-{sl_pct:.1f}%)\n"
+                f"- 근거: {op.rationale}\n"
+            )
 
     def _opinions_to_text(self, all_opinions: dict[str, list[AgentOpinion]]) -> str:
         lines = []
