@@ -22,14 +22,16 @@ _kis = KisClient(_cfg.kis)
 
 
 def _fetch_prices(symbols: list[str]) -> dict[str, float]:
-    """종목코드 → 현재가 딕셔너리 반환. 실패 시 0."""
+    """종목코드 → 현재가 딕셔너리 반환. 실패 또는 0이면 제외."""
     result = {}
     for sym in symbols:
         try:
             data = _kis.get_price(sym)
-            result[sym] = float(data.get("stck_prpr", 0) or 0)
+            px = float(data.get("stck_prpr", 0) or 0)
+            if px > 0:
+                result[sym] = px
         except Exception:
-            result[sym] = 0.0
+            pass
     return result
 
 
@@ -72,6 +74,17 @@ def dashboard():
     # 현재가 일괄 조회
     symbols = list({p.symbol for p in active} | {c.symbol for c in active_cands})
     prices = _fetch_prices(symbols)
+
+    # 계좌 잔고
+    try:
+        bal = _kis.get_balance()
+        o2 = (bal.get("output2") or [{}])[0]
+        account_cash = int(o2.get("dnca_tot_amt", 0))      # 예수금 총액
+        order_cash = int(o2.get("ord_psbl_cash", 0))        # 주문가능액
+        eval_amt = int(o2.get("evlu_amt_smtl_amt", 0))      # 유가평가액
+        total_eval = int(o2.get("tot_evlu_amt", 0))         # 총평가금액
+    except Exception:
+        account_cash = order_cash = eval_amt = total_eval = 0
 
     # 오늘 PnL (청산 기준)
     daily_pnl = sum(
@@ -210,6 +223,22 @@ def dashboard():
     <div class="card">
       <div class="card-label">감시 후보</div>
       <div class="card-value">{len(active_cands)}종목</div>
+    </div>
+    <div class="card">
+      <div class="card-label">예수금 총액</div>
+      <div class="card-value">{account_cash:,}원</div>
+    </div>
+    <div class="card">
+      <div class="card-label">주문가능액</div>
+      <div class="card-value">{order_cash:,}원</div>
+    </div>
+    <div class="card">
+      <div class="card-label">유가평가액</div>
+      <div class="card-value">{eval_amt:,}원</div>
+    </div>
+    <div class="card">
+      <div class="card-label">총평가금액</div>
+      <div class="card-value">{total_eval:,}원</div>
     </div>
   </div>
 
