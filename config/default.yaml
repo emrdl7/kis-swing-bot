@@ -33,8 +33,7 @@ agents:
   num_agents: 3                  # 참여 에이전트 수
 
 notification:
-  discord_enabled: true
-  # discord_webhook_url → .env
+  enabled: false   # 추후 텔레그램 연동 예정
 
 dart:
   # api_key → .env

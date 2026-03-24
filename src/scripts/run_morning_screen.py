@@ -10,7 +10,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import logging
 from datetime import datetime
 
 from src.core.config import load_config
@@ -24,7 +23,7 @@ from src.agents.news_agent import NewsAgent
 from src.agents.theme_agent import ThemeAgent
 from src.agents.technical_agent import TechnicalAgent
 from src.agents.debate_engine import DebateEngine
-from src.notification.discord import DiscordNotifier
+from src.notification import apple_notes
 from src.utils.logging_setup import setup
 
 log = setup("morning_screen")
@@ -50,12 +49,11 @@ def main() -> None:
     dart_text = dart_client.format_for_llm(disclosures)
     dart_client.close()
 
-    # 3) 기술적 지표 (기존 후보 종목 대상, 없으면 빈 문자열)
+    # 3) 기술적 지표 (기존 후보 종목 대상)
     existing_candidates = [SwingCandidate.from_dict(d) for d in state_store.load_candidates()]
     active_candidates = [c for c in existing_candidates if not c.is_expired()]
     log.info("기존 미만료 후보: %d개", len(active_candidates))
 
-    # KIS 클라이언트는 토큰 발급 비용이 있으므로 기존 후보가 있을 때만 지표 조회
     technical_text = ""
     nxt_text = ""
     if active_candidates and cfg.kis.app_key:
@@ -83,14 +81,12 @@ def main() -> None:
         technical_text = "\n".join(tech_lines)
         nxt_text = "\n".join(nxt_lines) if nxt_lines else "NXT 데이터 없음"
 
-    # 기존 후보 저장 (NXT 데이터 업데이트)
     if active_candidates:
         state_store.save_candidates([c.to_dict() for c in active_candidates])
 
     # 4) LLM 멀티에이전트 토론
     log.info("LLM 멀티에이전트 토론 시작...")
     llm = LLMClient(
-        api_key=cfg.anthropic_api_key,
         model=cfg.agents.model,
         max_tokens=cfg.agents.max_tokens,
     )
@@ -128,33 +124,26 @@ def main() -> None:
             merged.append(cand)
             existing_symbols.add(cand.symbol)
 
-    # 최대 후보 수 제한
     merged = merged[:cfg.screening.max_candidates]
     state_store.save_candidates([c.to_dict() for c in merged])
     log.info("저장된 후보 총 %d개", len(merged))
 
-    # 6) Discord 알림
-    notifier = DiscordNotifier(
-        webhook_url=cfg.notification.discord_webhook_url,
-        enabled=cfg.notification.discord_enabled,
-    )
-
-    lines = [f"📋 [{today}] 스윙 봇 장 전 발굴 완료\n"]
+    # 6) 결과 로그 출력 (알림은 추후 텔레그램 연동)
     for i, c in enumerate(merged, 1):
         exp_str = c.expires_at.strftime("%m/%d") if c.expires_at else "-"
-        lines.append(
-            f"**{i}. {c.name} ({c.symbol})**\n"
-            f"  진입: {int(c.entry_low):,}~{int(c.entry_high):,}원\n"
-            f"  목표: {int(c.target_price):,}원  손절: {int(c.stop_price):,}원\n"
-            f"  신뢰도: {c.consensus_score:.0%}  만료: {exp_str}\n"
-            f"  근거: {c.rationale[:80]}...\n"
+        log.info(
+            "  [%d] %s(%s) 진입: %s~%s 목표: %s 손절: %s 신뢰: %.0f%% 만료: %s",
+            i, c.name, c.symbol,
+            f"{int(c.entry_low):,}", f"{int(c.entry_high):,}",
+            f"{int(c.target_price):,}", f"{int(c.stop_price):,}",
+            c.consensus_score * 100, exp_str,
         )
 
     if not merged:
-        lines.append("오늘 발굴된 후보 없음")
+        log.info("  오늘 발굴된 후보 없음")
 
-    notifier.send("\n".join(lines))
-    notifier.close()
+    # Apple Notes 보고
+    apple_notes.report_morning_screen([c.to_dict() for c in merged], today)
 
     log.info("=== 장 전 발굴 완료 ===")
 

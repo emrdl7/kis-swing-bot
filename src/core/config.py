@@ -51,8 +51,8 @@ class AgentsConfig(BaseModel):
 
 
 class NotificationConfig(BaseModel):
-    discord_enabled: bool = True
-    discord_webhook_url: str = ""
+    # 추후 텔레그램 연동 예정
+    enabled: bool = False
 
 
 class DartConfig(BaseModel):
@@ -80,10 +80,8 @@ class AppConfig(BaseSettings):
     kis_app_secret: str = Field("", alias="KIS_APP_SECRET", validation_alias="KIS_APP_SECRET")
     kis_account_no: str = Field("", alias="KIS_ACCOUNT_NO", validation_alias="KIS_ACCOUNT_NO")
     kis_account_type: str = Field("01", alias="KIS_ACCOUNT_TYPE", validation_alias="KIS_ACCOUNT_TYPE")
-    anthropic_api_key: str = Field("", alias="ANTHROPIC_API_KEY", validation_alias="ANTHROPIC_API_KEY")
     # DART: 기존 프로젝트는 OPENDART_API_KEY 사용
     dart_api_key: str = Field("", alias="OPENDART_API_KEY", validation_alias="OPENDART_API_KEY")
-    discord_webhook_url: str = Field("", alias="SWING_DISCORD_WEBHOOK_URL", validation_alias="SWING_DISCORD_WEBHOOK_URL")
 
     # 서브 섹션 (YAML에서 오버라이드 가능)
     kis: KisConfig = Field(default_factory=KisConfig)
@@ -121,10 +119,6 @@ class AppConfig(BaseSettings):
             self.kis = self.kis.model_copy(update={"account_type": self.kis_account_type})
         if self.dart_api_key:
             self.dart = self.dart.model_copy(update={"api_key": self.dart_api_key})
-        if self.discord_webhook_url:
-            self.notification = self.notification.model_copy(update={
-                "discord_webhook_url": self.discord_webhook_url
-            })
 
 
 def load_config(yaml_path: str | Path | None = None) -> AppConfig:
