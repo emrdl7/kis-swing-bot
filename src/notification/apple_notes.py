@@ -146,7 +146,7 @@ def report_morning_screen(candidates: list[dict], today: str) -> bool:
 
 
 def report_eod(positions_closed: list[dict], daily_pnl: int, today: str) -> bool:
-    """장 마감 보고."""
+    """장 마감 보고 (raw data, 하위 호환용)."""
     lines = [f"# [{today}] 스윙봇 장 마감 보고", ""]
     lines.append(f"## 오늘 실현 손익: {daily_pnl:+,}원")
     lines.append("")
@@ -165,6 +165,14 @@ def report_eod(positions_closed: list[dict], daily_pnl: int, today: str) -> bool
         lines.append("오늘 청산 없음")
 
     return create_note(f"[장마감] {today} 스윙봇 보고", "\n".join(lines))
+
+
+def report_eod_analysis(analysis: str, daily_pnl: int, today: str) -> bool:
+    """LLM이 작성한 장 마감 분석 보고서."""
+    pnl_sign = "+" if daily_pnl >= 0 else ""
+    header = f"# [{today}] 장 마감 투자 분석 보고\n\n**오늘 실현 손익: {pnl_sign}{daily_pnl:,}원**\n\n---\n\n"
+    body = header + analysis
+    return create_note(f"[장마감] {today} 투자 분석", body)
 
 
 def report_trade(action: str, symbol: str, name: str, price: float,
