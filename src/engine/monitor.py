@@ -81,13 +81,29 @@ class MarketMonitor:
 
         try:
             cash = self.kis.get_cash()
+            if cash == 0 and self.cfg.trading.mock_budget > 0:
+                cash = self.cfg.trading.mock_budget
+                log.debug("잔고 API 0 → mock_budget 사용: %d원", cash)
         except Exception as e:
             log.error("잔고 조회 실패: %s", e)
-            cash = 0
+            cash = self.cfg.trading.mock_budget or 0
+
+        # 오늘 이미 거래된 종목 (진입 또는 당일 청산) → 재진입 금지
+        today_str = today
+        traded_today = {
+            p.symbol for p in positions
+            if p.entry_time.strftime("%Y-%m-%d") == today_str
+        }
 
         active_now = [p for p in positions if p.state != PositionState.CLOSED]
+        entered_symbols: set[str] = set()  # 이번 틱에서 진입한 종목
+
+        remaining_candidates = list(candidates)
         for cand in candidates:
             if cand.is_expired(now):
+                continue
+            # 당일 이미 거래된 종목은 재진입 금지
+            if cand.symbol in traded_today:
                 continue
             try:
                 price_data = self.kis.get_price(cand.symbol)
@@ -99,6 +115,8 @@ class MarketMonitor:
                 if new_pos:
                     positions.append(new_pos)
                     active_now.append(new_pos)
+                    entered_symbols.add(cand.symbol)
+                    traded_today.add(cand.symbol)
                     changed = True
                     log.info(
                         "[%s] 매수 완료 avg=%.0f qty=%d 목표=%.0f 손절=%.0f",
@@ -112,6 +130,11 @@ class MarketMonitor:
                     )
             except Exception as e:
                 log.error("[%s] 진입 체크 오류: %s", cand.symbol, e)
+
+        # 진입 완료된 후보는 candidates.json에서 제거
+        if entered_symbols:
+            remaining_candidates = [c for c in candidates if c.symbol not in entered_symbols]
+            state_store.save_candidates([c.to_dict() for c in remaining_candidates])
 
         if changed:
             state_store.save_positions([p.to_dict() for p in positions])
