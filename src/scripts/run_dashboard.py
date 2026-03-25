@@ -113,12 +113,12 @@ def dashboard():
           <td><b>{p.name}</b><br><small style="color:#888">{p.symbol}</small></td>
           <td>{int(p.avg_price):,}</td>
           <td style="color:#fff;font-weight:bold">{cur_str}</td>
-          <td>{int(p.target_price):,}</td>
-          <td>{int(p.stop_price):,}</td>
-          <td>{trail}</td>
           <td style="color:{pc};font-weight:bold">{pnl_pct:+.2f}%<br>
             <small style="color:{pc}">{pnl_amt:+,}원</small></td>
           <td><span class="badge {p.state.value.lower()}">{p.state.value}</span></td>
+          <td class="hide-mobile">{int(p.target_price):,}</td>
+          <td class="hide-mobile">{int(p.stop_price):,}</td>
+          <td class="hide-mobile">{trail}</td>
         </tr>"""
 
     if not pos_rows:
@@ -136,12 +136,12 @@ def dashboard():
         <tr>
           <td><b>{c.name}</b><br><small style="color:#888">{c.symbol}</small></td>
           <td style="color:#fff;font-weight:bold">{cur_str}</td>
-          <td>{int(c.entry_low):,} ~ {int(c.entry_high):,}</td>
-          <td>{int(c.target_price):,}</td>
-          <td>{int(c.stop_price):,}</td>
-          <td>{zone_badge}</td>
+          <td>{int(c.entry_low):,}~{int(c.entry_high):,}</td>
           <td style="color:{score_color}">{c.consensus_score:.0%}</td>
-          <td>{exp}</td>
+          <td>{zone_badge}</td>
+          <td class="hide-mobile">{int(c.target_price):,}</td>
+          <td class="hide-mobile">{int(c.stop_price):,}</td>
+          <td class="hide-mobile">{exp}</td>
         </tr>"""
 
     if not cand_rows:
@@ -159,11 +159,11 @@ def dashboard():
         closed_rows += f"""
         <tr>
           <td><b>{p.name}</b><br><small style="color:#888">{p.symbol}</small></td>
-          <td>{int(p.avg_price):,}</td>
-          <td>{int(p.close_price):,}</td>
           <td style="color:{pc};font-weight:bold">{pnl_pct:+.2f}%</td>
           <td style="color:{pc}">{pnl_amt:+,}원</td>
           <td>{reason}</td>
+          <td class="hide-mobile">{int(p.avg_price):,}</td>
+          <td class="hide-mobile">{int(p.close_price):,}</td>
         </tr>"""
 
     if not closed_rows:
@@ -174,34 +174,49 @@ def dashboard():
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="refresh" content="30">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <title>KIS Swing Bot</title>
   <style>
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{ background: #0f1117; color: #e0e0e0; font-family: -apple-system, sans-serif; padding: 20px; }}
+    body {{ background: #0f1117; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 16px; }}
     h1 {{ font-size: 18px; color: #fff; margin-bottom: 4px; }}
-    .meta {{ color: #666; font-size: 12px; margin-bottom: 24px; }}
-    .summary {{ display: flex; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }}
-    .card {{ background: #1a1d27; border-radius: 10px; padding: 16px 22px; min-width: 140px; }}
-    .card-label {{ font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }}
-    .card-value {{ font-size: 22px; font-weight: 700; margin-top: 4px; }}
-    section {{ margin-bottom: 28px; }}
-    h2 {{ font-size: 13px; color: #aaa; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; border-bottom: 1px solid #2a2d3a; padding-bottom: 6px; }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-    th {{ text-align: left; color: #666; font-weight: 500; padding: 6px 10px; border-bottom: 1px solid #2a2d3a; }}
-    td {{ padding: 8px 10px; border-bottom: 1px solid #1e2130; vertical-align: middle; }}
+    .meta {{ color: #666; font-size: 12px; margin-bottom: 20px; }}
+
+    /* 카드 그리드 — 모바일 2열, 태블릿 3열, 데스크탑 자동 */
+    .summary {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 24px; }}
+    @media (min-width: 480px) {{ .summary {{ grid-template-columns: repeat(3, 1fr); }} }}
+    @media (min-width: 768px) {{ .summary {{ grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }} }}
+    .card {{ background: #1a1d27; border-radius: 10px; padding: 12px 14px; }}
+    .card-label {{ font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }}
+    .card-value {{ font-size: 18px; font-weight: 700; margin-top: 4px; word-break: keep-all; }}
+    @media (min-width: 768px) {{ .card {{ padding: 16px 22px; }} .card-value {{ font-size: 22px; }} }}
+
+    section {{ margin-bottom: 24px; }}
+    h2 {{ font-size: 12px; color: #aaa; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; border-bottom: 1px solid #2a2d3a; padding-bottom: 6px; }}
+
+    /* 테이블 — 모바일에서 가로 스크롤 */
+    .table-wrap {{ overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 8px; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 12px; min-width: 500px; }}
+    @media (min-width: 768px) {{ table {{ font-size: 13px; }} }}
+    th {{ text-align: left; color: #666; font-weight: 500; padding: 6px 8px; border-bottom: 1px solid #2a2d3a; white-space: nowrap; }}
+    td {{ padding: 8px 8px; border-bottom: 1px solid #1e2130; vertical-align: middle; white-space: nowrap; }}
     tr:last-child td {{ border-bottom: none; }}
     tr:hover td {{ background: #1e2130; }}
+
+    /* 모바일에서 덜 중요한 컬럼 숨김 */
+    .hide-mobile {{ display: none; }}
+    @media (min-width: 640px) {{ .hide-mobile {{ display: table-cell; }} }}
+
     .badge {{ padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }}
     .entered {{ background: #1a3a5c; color: #60b8ff; }}
     .trailing {{ background: #1a3a2a; color: #00c9a7; }}
     .watching {{ background: #2a2a1a; color: #f9ca24; }}
-    .refresh {{ color: #555; font-size: 11px; margin-top: 20px; text-align: right; }}
+    .refresh {{ color: #555; font-size: 11px; margin-top: 16px; text-align: right; }}
   </style>
 </head>
 <body>
   <h1>KIS Swing Bot</h1>
-  <div class="meta">마지막 갱신: {now} &nbsp;·&nbsp; 30초마다 자동 새로고침</div>
+  <div class="meta">마지막 갱신: {now} &nbsp;·&nbsp; 30초 자동 새로고침</div>
 
   <div class="summary">
     <div class="card">
@@ -244,32 +259,41 @@ def dashboard():
 
   <section>
     <h2>보유 포지션</h2>
+    <div class="table-wrap">
     <table>
       <thead><tr>
-        <th>종목</th><th>매수가</th><th>현재가</th><th>목표가</th><th>손절가</th><th>트레일링</th><th>수익률 / 손익</th><th>상태</th>
+        <th>종목</th><th>매수가</th><th>현재가</th><th>수익률 / 손익</th><th>상태</th>
+        <th class="hide-mobile">목표가</th><th class="hide-mobile">손절가</th><th class="hide-mobile">트레일링</th>
       </tr></thead>
       <tbody>{pos_rows}</tbody>
     </table>
+    </div>
   </section>
 
   <section>
     <h2>감시 후보</h2>
+    <div class="table-wrap">
     <table>
       <thead><tr>
-        <th>종목</th><th>현재가</th><th>진입 구간</th><th>목표가</th><th>손절가</th><th>진입여부</th><th>신뢰도</th><th>만료</th>
+        <th>종목</th><th>현재가</th><th>진입구간</th><th>신뢰도</th><th>진입여부</th>
+        <th class="hide-mobile">목표가</th><th class="hide-mobile">손절가</th><th class="hide-mobile">만료</th>
       </tr></thead>
       <tbody>{cand_rows}</tbody>
     </table>
+    </div>
   </section>
 
   <section>
     <h2>오늘 청산 내역</h2>
+    <div class="table-wrap">
     <table>
       <thead><tr>
-        <th>종목</th><th>매수가</th><th>매도가</th><th>수익률</th><th>손익</th><th>사유</th>
+        <th>종목</th><th>수익률</th><th>손익</th><th>사유</th>
+        <th class="hide-mobile">매수가</th><th class="hide-mobile">매도가</th>
       </tr></thead>
       <tbody>{closed_rows}</tbody>
     </table>
+    </div>
   </section>
 
   <div class="refresh">auto-refresh 30s</div>
