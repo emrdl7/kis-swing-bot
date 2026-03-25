@@ -28,6 +28,8 @@
   <dict>
     <key>PYTHONUNBUFFERED</key>
     <string>1</string>
+    <key>CLAUDE_BIN</key>
+    <string>/Users/johyeonchang/.local/bin/claude</string>
     <key>PYTHONPATH</key>
     <string>/Users/johyeonchang/services/kis-swing-bot</string>
   </dict>
