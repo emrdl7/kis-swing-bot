@@ -237,6 +237,52 @@ class KisClient:
         log.info("매도 주문 [%s] qty=%d → %s", symbol, qty, result.get("msg1", ""))
         return result
 
+    def get_holding_qty(self, symbol: str) -> int:
+        """특정 종목 현재 보유 수량 조회."""
+        try:
+            bal = self.get_balance()
+            for item in bal.get("output1", []):
+                if item.get("pdno") == symbol:
+                    return int(item.get("hldg_qty", 0) or 0)
+        except Exception:
+            pass
+        return 0
+
+    def get_today_executions(self, symbol: str) -> list[dict]:
+        """오늘 체결 내역 조회 (매수+매도).
+
+        반환 필드 주요값:
+          sll_buy_dvsn_cd: "01"=매도, "02"=매수
+          tot_ccld_qty   : 총체결수량
+          avg_prvs       : 체결평균가
+          odno           : 주문번호
+        """
+        self.ensure_token()
+        tr_id = "VTTC8001R" if self._is_mock else "TTTC8001R"
+        url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+        today = datetime.now().strftime("%Y%m%d")
+        params = {
+            "CANO": self.cfg.account_no[:8],
+            "ACNT_PRDT_CD": self._acnt_prdt_cd(),
+            "INQR_STRT_DT": today,
+            "INQR_END_DT": today,
+            "SLL_BUY_DVSN_CD": "00",   # 전체
+            "INQR_DVSN": "00",
+            "PDNO": symbol,
+            "CCLD_DVSN": "01",         # 체결만 (미체결 제외)
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "INQR_DVSN_3": "00",
+            "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+        try:
+            return self._get_with_retry(url, self._headers(tr_id), params).get("output1", []) or []
+        except Exception as e:
+            log.warning("[%s] 체결 내역 조회 실패: %s", symbol, e)
+            return []
+
     def get_positions(self) -> list[dict]:
         """현재 보유 종목 조회."""
         data = self.get_balance()
