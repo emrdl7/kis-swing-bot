@@ -12,13 +12,13 @@
     <string>/Users/johyeonchang/services/kis-swing-bot/src/scripts/run_morning_screen.py</string>
   </array>
 
-  <!-- 매일 08:00 실행 -->
+  <!-- 매일 08:50 실행 (NXT 시세 기준 진입구간 판단) -->
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key>
     <integer>8</integer>
     <key>Minute</key>
-    <integer>0</integer>
+    <integer>50</integer>
   </dict>
 
   <key>WorkingDirectory</key>

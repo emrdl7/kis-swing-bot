@@ -1,6 +1,7 @@
-"""장 전 종목 발굴 스크립트 (08:00 실행).
+"""장 전 종목 발굴 스크립트 (08:50 실행).
 
-launchd ai.kis.swing.morning.plist 에 의해 매일 08:00 호출됨.
+launchd ai.kis.swing.morning.plist 에 의해 매일 08:50 호출됨.
+NXT(장전) 시세 기준으로 진입구간 판단 → 09:05 이후 실제 진입 여부 결정.
 """
 from __future__ import annotations
 import sys
@@ -13,6 +14,7 @@ from datetime import datetime
 
 from src.core.config import load_config
 from src.core import state_store
+from src.core.clock import is_pre_market
 from src.core.models import SwingCandidate
 from src.data.kis_client import KisClient
 from src.data.dart_client import DartClient
@@ -30,12 +32,19 @@ log = setup("morning_screen")
 
 
 def make_price_fetcher(kis: KisClient):
-    """종목코드 리스트를 받아 현재가 + 기술지표를 반환하는 함수 생성."""
+    """종목코드 리스트를 받아 현재가 + 기술지표를 반환하는 함수 생성.
+
+    장전(08:00~09:00) 실행 시 NXT(장전) 시세를 반환하며,
+    KIS API가 시간대에 따라 자동으로 NXT 가격을 반환함.
+    """
+    pre_market = is_pre_market()
+    price_label = "NXT(장전)" if pre_market else "현재가"
+
     def fetch(symbols: list[str]) -> dict[str, dict]:
         result = {}
         for sym in symbols:
             try:
-                price_data = kis.get_price(sym)
+                price_data = kis.get_price(sym)  # 장전 시간대에는 NXT 시세 자동 반환
                 ohlcv = kis.get_daily_ohlcv(sym, count=60)
                 ind = compute_indicators(ohlcv)
 
@@ -58,8 +67,8 @@ def make_price_fetcher(kis: KisClient):
                     "above_ma20": ind.get("above_ma20"),
                     "trend_up": ind.get("trend_up"),
                 }
-                log.info("  가격 조회 [%s] %s: %s원 (%+.2f%%)",
-                         sym, name, f"{int(cur_px):,}", chg_pct)
+                log.info("  %s 조회 [%s] %s: %s원 (%+.2f%%)",
+                         price_label, sym, name, f"{int(cur_px):,}", chg_pct)
             except Exception as e:
                 log.warning("가격 조회 실패 [%s]: %s", sym, e)
         return result
