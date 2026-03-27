@@ -41,7 +41,21 @@ def _esc_as(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _ensure_notes_running() -> None:
+    """Notes 앱이 실행 중인지 확인하고 없으면 기동."""
+    try:
+        subprocess.run(
+            ["osascript", "-e", 'tell application "Notes" to activate'],
+            capture_output=True, timeout=10,
+        )
+        import time
+        time.sleep(1)
+    except Exception:
+        pass
+
+
 def _run_script(script: str) -> bool:
+    _ensure_notes_running()
     try:
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".applescript", delete=False, encoding="utf-8"
@@ -50,7 +64,7 @@ def _run_script(script: str) -> bool:
             tmp = f.name
         result = subprocess.run(
             ["osascript", tmp],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True, text=True, timeout=30,
         )
         os.unlink(tmp)
         if result.returncode != 0:
