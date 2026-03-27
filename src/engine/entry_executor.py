@@ -75,18 +75,36 @@ class EntryExecutor:
             except Exception as e:
                 log.error("[%s] 매수 주문 실패: %s", candidate.symbol, e)
                 return None
+
+            # 실제 체결가 확인 (잔고 API의 pchs_avg_pric)
+            import time as _time
+            _time.sleep(1)  # 체결 반영 대기
+            actual_price = current_price
+            try:
+                bal = self.kis.get_balance()
+                for item in bal.get("output1", []):
+                    if item.get("pdno") == candidate.symbol:
+                        p = float(item.get("pchs_avg_pric", 0) or 0)
+                        if p > 0:
+                            actual_price = p
+                            log.info("[%s] 실제 체결가 확인: %.0f원 (예상 %.0f원)",
+                                     candidate.symbol, actual_price, current_price)
+                        break
+            except Exception as e:
+                log.warning("[%s] 체결가 확인 실패, 예상가 사용: %s", candidate.symbol, e)
         else:
             log.info("[DRY-RUN] 매수 스킵 [%s] qty=%d", candidate.symbol, qty)
+            actual_price = current_price
 
         pos = SwingPosition(
             symbol=candidate.symbol,
             name=candidate.name,
             qty=qty,
-            avg_price=current_price,
+            avg_price=actual_price,
             entry_time=datetime.now(),
             target_price=candidate.target_price,
             stop_price=candidate.stop_price,
             state=PositionState.ENTERED,
-            peak_price=current_price,
+            peak_price=actual_price,
         )
         return pos

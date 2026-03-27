@@ -160,6 +160,21 @@ class MarketMonitor:
                 log.error("[%s] 매도 주문 실패: %s", pos.symbol, e)
                 return
 
+            # 실제 매도 체결가 확인 (직전 체결가 재조회)
+            import time as _time
+            _time.sleep(1)
+            try:
+                pd = self.kis.get_price(pos.symbol)
+                actual_sell = float(pd.get("stck_prpr", 0) or 0)
+                if actual_sell > 0 and actual_sell != price:
+                    log.info("[%s] 실제 매도가 재확인: %.0f원 (트리거 %.0f원)",
+                             pos.symbol, actual_sell, price)
+                    price = actual_sell
+                    pnl_pct = pos.pnl_pct(price)
+                    pnl_amount = int((price - pos.avg_price) * pos.qty)
+            except Exception as e:
+                log.warning("[%s] 매도 체결가 재확인 실패: %s", pos.symbol, e)
+
         pos.state = PositionState.CLOSED
         pos.close_reason = reason
         pos.close_price = price
