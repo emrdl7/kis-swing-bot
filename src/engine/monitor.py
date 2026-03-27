@@ -164,9 +164,47 @@ class MarketMonitor:
                 log.error("[%s] 매도 주문 실패: %s", pos.symbol, e)
                 return
 
-            # 실제 매도 체결가 확인 (직전 체결가 재조회)
+            # 매도 체결 여부 확인 (잔고 API로 수량 소멸 확인)
             import time as _time
-            _time.sleep(1)
+            _time.sleep(2)
+            sell_verified = False
+            for attempt in range(3):
+                try:
+                    bal = self.kis.get_balance()
+                    held = {
+                        item.get("pdno"): int(item.get("hldg_qty", 0) or 0)
+                        for item in bal.get("output1", [])
+                    }
+                    remaining = held.get(pos.symbol, 0)
+                    if remaining == 0:
+                        sell_verified = True
+                        log.info("[%s] 매도 체결 확인: 잔고 0주", pos.symbol)
+                    elif remaining < pos.qty:
+                        sell_verified = True
+                        log.warning("[%s] 매도 부분 체결: 잔여 %d주 (원래 %d주)", pos.symbol, remaining, pos.qty)
+                    else:
+                        log.error(
+                            "[%s] 매도 체결 미확인: 잔고 %d주 그대로 (attempt %d) — ghost order 의심",
+                            pos.symbol, remaining, attempt + 1,
+                        )
+                    if sell_verified:
+                        break
+                except Exception as e:
+                    log.warning("[%s] 매도 체결 확인 실패 (attempt %d): %s", pos.symbol, attempt + 1, e)
+                    sell_verified = True  # 확인 불가 시 정상 처리 (재매도 방지)
+                    break
+                if not sell_verified and attempt < 2:
+                    _time.sleep(1)
+
+            if not sell_verified:
+                log.error(
+                    "[%s] 매도 체결 최종 미확인 → 포지션 CLOSED 처리 보류. "
+                    "KIS 앱에서 체결 내역을 직접 확인하세요.",
+                    pos.symbol,
+                )
+                return  # CLOSED 처리 안 함 → 다음 틱에서 재시도 가능
+
+            # 실제 매도가 확인 (현재가 기준 근사치)
             try:
                 pd = self.kis.get_price(pos.symbol)
                 actual_sell = float(pd.get("stck_prpr", 0) or 0)
@@ -177,7 +215,7 @@ class MarketMonitor:
                     pnl_pct = pos.pnl_pct(price)
                     pnl_amount = int((price - pos.avg_price) * pos.qty)
             except Exception as e:
-                log.warning("[%s] 매도 체결가 재확인 실패: %s", pos.symbol, e)
+                log.warning("[%s] 매도가 재확인 실패: %s", pos.symbol, e)
 
         pos.state = PositionState.CLOSED
         pos.close_reason = reason

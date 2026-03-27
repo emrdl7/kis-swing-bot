@@ -76,22 +76,41 @@ class EntryExecutor:
                 log.error("[%s] 매수 주문 실패: %s", candidate.symbol, e)
                 return None
 
-            # 실제 체결가 확인 (잔고 API의 pchs_avg_pric)
+            # 실제 체결 여부 및 체결가 확인 (잔고 API)
             import time as _time
-            _time.sleep(1)  # 체결 반영 대기
+            _time.sleep(2)  # 체결 반영 대기
             actual_price = current_price
-            try:
-                bal = self.kis.get_balance()
-                for item in bal.get("output1", []):
-                    if item.get("pdno") == candidate.symbol:
-                        p = float(item.get("pchs_avg_pric", 0) or 0)
-                        if p > 0:
-                            actual_price = p
-                            log.info("[%s] 실제 체결가 확인: %.0f원 (예상 %.0f원)",
-                                     candidate.symbol, actual_price, current_price)
+            verified = False
+            for attempt in range(3):  # 최대 3회 확인 (체결 지연 대비)
+                try:
+                    bal = self.kis.get_balance()
+                    for item in bal.get("output1", []):
+                        if item.get("pdno") == candidate.symbol:
+                            hldg_qty = int(item.get("hldg_qty", 0) or 0)
+                            p = float(item.get("pchs_avg_pric", 0) or 0)
+                            if hldg_qty > 0:
+                                verified = True
+                                if p > 0:
+                                    actual_price = p
+                                log.info(
+                                    "[%s] 매수 체결 확인: %.0f원 x %d주 (예상가 %.0f원)",
+                                    candidate.symbol, actual_price, hldg_qty, current_price,
+                                )
+                            break
+                    if verified:
                         break
-            except Exception as e:
-                log.warning("[%s] 체결가 확인 실패, 예상가 사용: %s", candidate.symbol, e)
+                except Exception as e:
+                    log.warning("[%s] 체결 확인 실패 (attempt %d): %s", candidate.symbol, attempt + 1, e)
+                if not verified and attempt < 2:
+                    _time.sleep(1)
+
+            if not verified:
+                log.error(
+                    "[%s] 매수 체결 미확인 → 포지션 등록 취소 (ghost order 의심). "
+                    "KIS 앱에서 체결 내역을 직접 확인하세요.",
+                    candidate.symbol,
+                )
+                return None
         else:
             log.info("[DRY-RUN] 매수 스킵 [%s] qty=%d", candidate.symbol, qty)
             actual_price = current_price
