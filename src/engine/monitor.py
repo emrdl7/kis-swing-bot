@@ -35,7 +35,14 @@ class MarketMonitor:
         try:
             while True:
                 self._tick()
-                time.sleep(POLL_INTERVAL_SEC)
+                # 마감 직전(15:25~15:30): 5초 간격으로 폴링 강화 (동시호가 가격 변동 대응)
+                now = datetime.now()
+                from datetime import time as _dt
+                if _dt(15, 25) <= now.time() <= _dt(15, 30):
+                    sleep_sec = 5
+                else:
+                    sleep_sec = POLL_INTERVAL_SEC
+                time.sleep(sleep_sec)
         except KeyboardInterrupt:
             log.info("모니터 종료")
         finally:
@@ -70,7 +77,13 @@ class MarketMonitor:
                 if px <= 0:
                     continue
 
+                prev_state = pos.state
+                prev_peak = pos.peak_price
                 pos = self.pos_mgr.update_trailing(pos, px)
+
+                # 트레일링 상태 변화 또는 peak 갱신 시에도 저장 (재시작 시 상태 유지)
+                if pos.state != prev_state or pos.peak_price != prev_peak:
+                    changed = True
 
                 should_exit, reason = self.pos_mgr.check_exit(pos, px, now)
                 if should_exit and reason:
