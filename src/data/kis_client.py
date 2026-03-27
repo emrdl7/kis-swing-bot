@@ -22,7 +22,9 @@ class KisClient:
         self.cfg = cfg
         self._access_token: str = ""
         self._token_expires_at: datetime = datetime.min
-        self._client = httpx.Client(timeout=10.0)
+        # 모의 API(openapivts:29443)는 SSL 호스트명 불일치 → verify=False
+        self._is_mock = "openapivts" in cfg.base_url
+        self._client = httpx.Client(timeout=10.0, verify=not self._is_mock)
         self._load_cached_token()
 
     # ── 토큰 관리 ──────────────────────────────────────────────────────────
@@ -95,20 +97,28 @@ class KisClient:
 
     # ── 시세 조회 ──────────────────────────────────────────────────────────
 
+    def _get_with_retry(self, url: str, headers: dict, params: dict, retries: int = 2) -> dict:
+        """GET 요청, 500 오류 시 최대 retries회 재시도."""
+        for attempt in range(retries + 1):
+            resp = self._client.get(url, headers=headers, params=params)
+            if resp.status_code == 500 and attempt < retries:
+                time.sleep(1)
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        resp.raise_for_status()
+        return resp.json()
+
     def get_price(self, symbol: str) -> dict:
         """현재가 조회."""
         self.ensure_token()
-        tr_id = "FHKST01010100"
         url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/quotations/inquire-price"
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
-        resp = self._client.get(url, headers=self._headers(tr_id), params=params)
-        resp.raise_for_status()
-        return resp.json().get("output", {})
+        return self._get_with_retry(url, self._headers("FHKST01010100"), params).get("output", {})
 
     def get_daily_ohlcv(self, symbol: str, count: int = 20) -> list[dict]:
         """일봉 데이터 조회 (최근 count일)."""
         self.ensure_token()
-        tr_id = "FHKST01010400"
         url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-price"
         today = datetime.now().strftime("%Y%m%d")
         params = {
@@ -119,9 +129,7 @@ class KisClient:
             "FID_INPUT_DATE_1": "",
             "FID_INPUT_DATE_2": today,
         }
-        resp = self._client.get(url, headers=self._headers(tr_id), params=params)
-        resp.raise_for_status()
-        output = resp.json().get("output2", []) or []
+        output = self._get_with_retry(url, self._headers("FHKST01010400"), params).get("output2", []) or []
         return output[:count]
 
     def get_nxt_price(self, symbol: str) -> dict:
@@ -133,8 +141,7 @@ class KisClient:
     def get_balance(self) -> dict:
         """계좌 잔고 조회."""
         self.ensure_token()
-        is_real = self.cfg.account_type == "01"
-        tr_id = "TTTC8434R" if is_real else "VTTC8434R"
+        tr_id = "VTTC8434R" if self._is_mock else "TTTC8434R"
         url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
         params = {
             "CANO": self.cfg.account_no[:8],
@@ -149,65 +156,84 @@ class KisClient:
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": "",
         }
-        resp = self._client.get(url, headers=self._headers(tr_id), params=params)
-        resp.raise_for_status()
-        return resp.json()
+        return self._get_with_retry(url, self._headers(tr_id), params)
 
     def get_cash(self) -> int:
         """주문 가능 현금 조회 (원)."""
         data = self.get_balance()
         output2 = data.get("output2", [{}])
         if output2:
-            return int(output2[0].get("dnca_tot_amt", 0))
+            s = output2[0]
+            # 당일 주문가능현금만 사용 (익일/총예수금은 실제 주문가능 금액보다 큼)
+            for field in ("ord_psbl_cash", "prvs_rcdl_excc_amt"):
+                v = s.get(field, 0)
+                if v and int(v) > 0:
+                    return int(v)
         return 0
 
     # ── 주문 ───────────────────────────────────────────────────────────────
 
+    def _acnt_prdt_cd(self) -> str:
+        return self.cfg.account_no[8:] if len(self.cfg.account_no) > 8 else "01"
+
+    def _post_order_with_retry(self, tr_id: str, body: dict, retries: int = 2) -> dict:
+        """주문 POST — 500 에러 시 재시도."""
+        url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/trading/order-cash"
+        last_exc: Exception | None = None
+        for attempt in range(retries + 1):
+            try:
+                hk = self._hashkey(body)
+                resp = self._client.post(url, headers=self._headers(tr_id, hashkey=hk), json=body)
+                if resp.status_code == 500 and attempt < retries:
+                    log.warning("주문 500 에러, 재시도 (%d/%d)", attempt + 1, retries)
+                    time.sleep(1)
+                    continue
+                resp.raise_for_status()
+                result = resp.json()
+                rt_cd = result.get("rt_cd", "0")
+                msg = result.get("msg1", "")
+                if rt_cd != "0":
+                    raise RuntimeError(f"주문 거부: {msg}")
+                return result
+            except RuntimeError:
+                raise
+            except Exception as e:
+                last_exc = e
+                if attempt < retries:
+                    time.sleep(1)
+        raise last_exc or RuntimeError("주문 실패")
+
     def buy_market(self, symbol: str, qty: int) -> dict:
         """시장가 매수."""
         self.ensure_token()
-        is_real = self.cfg.account_type == "01"
-        tr_id = "TTTC0802U" if is_real else "VTTC0802U"
-        url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/trading/order-cash"
+        tr_id = "VTTC0802U" if self._is_mock else "TTTC0802U"
         body = {
             "CANO": self.cfg.account_no[:8],
-            "ACNT_PRDT_CD": self.cfg.account_no[8:] if len(self.cfg.account_no) > 8 else "01",
+            "ACNT_PRDT_CD": self._acnt_prdt_cd(),
             "PDNO": symbol,
-            "ORD_DVSN": "01",   # 시장가
+            "ORD_DVSN": "01",
             "ORD_QTY": str(qty),
             "ORD_UNPR": "0",
-            "CTAC_TLNO": "",
-            "SLL_TYPE": "01",
-            "ALGO_NO": "",
+            "EXCG_ID_DVSN_CD": "KRX",
         }
-        hk = self._hashkey(body)
-        resp = self._client.post(url, headers=self._headers(tr_id, hashkey=hk), json=body)
-        resp.raise_for_status()
-        result = resp.json()
+        result = self._post_order_with_retry(tr_id, body)
         log.info("매수 주문 [%s] qty=%d → %s", symbol, qty, result.get("msg1", ""))
         return result
 
     def sell_market(self, symbol: str, qty: int) -> dict:
         """시장가 매도."""
         self.ensure_token()
-        is_real = self.cfg.account_type == "01"
-        tr_id = "TTTC0801U" if is_real else "VTTC0801U"
-        url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/trading/order-cash"
+        tr_id = "VTTC0801U" if self._is_mock else "TTTC0801U"
         body = {
             "CANO": self.cfg.account_no[:8],
-            "ACNT_PRDT_CD": self.cfg.account_no[8:] if len(self.cfg.account_no) > 8 else "01",
+            "ACNT_PRDT_CD": self._acnt_prdt_cd(),
             "PDNO": symbol,
-            "ORD_DVSN": "01",   # 시장가
+            "ORD_DVSN": "01",
             "ORD_QTY": str(qty),
             "ORD_UNPR": "0",
-            "CTAC_TLNO": "",
-            "SLL_TYPE": "01",
-            "ALGO_NO": "",
+            "EXCG_ID_DVSN_CD": "KRX",
         }
-        hk = self._hashkey(body)
-        resp = self._client.post(url, headers=self._headers(tr_id, hashkey=hk), json=body)
-        resp.raise_for_status()
-        result = resp.json()
+        result = self._post_order_with_retry(tr_id, body)
         log.info("매도 주문 [%s] qty=%d → %s", symbol, qty, result.get("msg1", ""))
         return result
 
