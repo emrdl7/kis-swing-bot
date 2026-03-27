@@ -159,11 +159,11 @@ def dashboard():
         closed_rows += f"""
         <tr>
           <td><b>{p.name}</b><br><small style="color:#888">{p.symbol}</small></td>
+          <td>{int(p.avg_price):,}</td>
+          <td>{int(p.close_price):,}</td>
           <td style="color:{pc};font-weight:bold">{pnl_pct:+.2f}%</td>
           <td style="color:{pc}">{pnl_amt:+,}원</td>
           <td>{reason}</td>
-          <td class="hide-mobile">{int(p.avg_price):,}</td>
-          <td class="hide-mobile">{int(p.close_price):,}</td>
         </tr>"""
 
     if not closed_rows:
@@ -288,8 +288,7 @@ def dashboard():
     <div class="table-wrap">
     <table>
       <thead><tr>
-        <th>종목</th><th>수익률</th><th>손익</th><th>사유</th>
-        <th class="hide-mobile">매수가</th><th class="hide-mobile">매도가</th>
+        <th>종목</th><th>매수가</th><th>매도가</th><th>수익률</th><th>손익</th><th>사유</th>
       </tr></thead>
       <tbody>{closed_rows}</tbody>
     </table>
