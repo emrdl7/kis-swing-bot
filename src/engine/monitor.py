@@ -92,14 +92,46 @@ class MarketMonitor:
             except Exception as e:
                 log.error("[%s] 포지션 체크 오류: %s", pos.symbol, e)
 
+        # ── 잔고 조회 1회 → 현금 + KIS 대사 동시 처리 ──
+        cash = self.cfg.trading.mock_budget or 0
         try:
-            cash = self.kis.get_cash()
+            bal = self.kis.get_balance()
+            output2 = (bal.get("output2") or [{}])[0]
+            for field in ("ord_psbl_cash", "prvs_rcdl_excc_amt"):
+                v = int(output2.get(field, 0) or 0)
+                if v > 0:
+                    cash = v
+                    break
             if cash == 0 and self.cfg.trading.mock_budget > 0:
                 cash = self.cfg.trading.mock_budget
                 log.debug("잔고 API 0 → mock_budget 사용: %d원", cash)
+
+            # KIS 실제 잔고 vs positions.json 대사
+            kis_holdings = {
+                item.get("pdno"): int(item.get("hldg_qty", 0) or 0)
+                for item in (bal.get("output1") or [])
+                if int(item.get("hldg_qty", 0) or 0) > 0
+            }
+            for pos in active_positions:
+                kis_qty = kis_holdings.get(pos.symbol, 0)
+                if kis_qty == 0:
+                    log.error(
+                        "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=0주 — ghost position 의심, 수동 확인 필요",
+                        pos.symbol, pos.qty,
+                    )
+                elif kis_qty != pos.qty:
+                    log.warning(
+                        "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=%d주",
+                        pos.symbol, pos.qty, kis_qty,
+                    )
+            for symbol, kis_qty in kis_holdings.items():
+                if not any(p.symbol == symbol for p in active_positions):
+                    log.warning(
+                        "⚠️ KIS 잔고 [%s] %d주 있으나 positions.json에 없음 — 수동 매수 또는 누락",
+                        symbol, kis_qty,
+                    )
         except Exception as e:
-            log.error("잔고 조회 실패: %s", e)
-            cash = self.cfg.trading.mock_budget or 0
+            log.error("잔고 조회/대사 실패: %s", e)
 
         # 장 시작 5분 이내 매수 금지 (호가 갭 회피)
         if not is_entry_allowed(now):
@@ -233,16 +265,18 @@ class MarketMonitor:
             pnl_pct = pos.pnl_pct(price)
             pnl_amount = int((price - pos.avg_price) * pos.qty)
 
-            # ── 실제 매도 체결가 조회: 체결 내역 API → 현재가 순으로 시도 ──
+            # ── 실제 매도 체결가 조회: 체결 내역 API (tot_ccld_amt/tot_ccld_qty) → 현재가 순 ──
             try:
                 execs = self.kis.get_today_executions(pos.symbol)
                 sell_execs = [e for e in execs if e.get("sll_buy_dvsn_cd") == "01"]
                 if sell_execs:
-                    p = float(sell_execs[0].get("avg_prvs", 0) or 0)
+                    total_qty = sum(int(e.get("tot_ccld_qty", 0) or 0) for e in sell_execs)
+                    total_amt = sum(int(e.get("tot_ccld_amt", 0) or 0) for e in sell_execs)
+                    p = total_amt / total_qty if total_qty > 0 else 0
                     if p > 0:
                         log.info(
-                            "[%s] 매도 체결가 (체결내역): %.0f원 (트리거 %.0f원)",
-                            pos.symbol, p, price,
+                            "[%s] 매도 체결가 (체결내역 실계산): %.0f원 (트리거 %.0f원, 체결%d주×%+.0f원)",
+                            pos.symbol, p, price, total_qty, p - price,
                         )
                         price = p
                         pnl_pct = pos.pnl_pct(price)

@@ -113,15 +113,17 @@ class EntryExecutor:
                 )
                 return None
 
-            # ── 실제 체결가 조회: 체결 내역 API → 잔고 평균가 순으로 시도 ──
+            # ── 실제 체결가 조회: 체결 내역 API (tot_ccld_amt/tot_ccld_qty) → 잔고 평균가 순 ──
             try:
                 execs = self.kis.get_today_executions(candidate.symbol)
                 buy_execs = [e for e in execs if e.get("sll_buy_dvsn_cd") == "02"]
                 if buy_execs:
-                    p = float(buy_execs[0].get("avg_prvs", 0) or 0)
+                    total_qty = sum(int(e.get("tot_ccld_qty", 0) or 0) for e in buy_execs)
+                    total_amt = sum(int(e.get("tot_ccld_amt", 0) or 0) for e in buy_execs)
+                    p = total_amt / total_qty if total_qty > 0 else 0
                     if p > 0:
                         actual_price = p
-                        log.info("[%s] 매수 체결가 (체결내역): %.0f원", candidate.symbol, actual_price)
+                        log.info("[%s] 매수 체결가 (체결내역 실계산): %.0f원", candidate.symbol, actual_price)
             except Exception:
                 pass
 
