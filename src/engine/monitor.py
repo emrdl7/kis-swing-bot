@@ -169,15 +169,24 @@ class MarketMonitor:
             _time.sleep(2)
             sell_verified = False
 
+            qty_after = pos.qty  # 기본값: 변화 없음
             for attempt in range(3):
                 try:
                     qty_after = self.kis.get_holding_qty(pos.symbol)
                     if qty_after < pos.qty:
                         sell_verified = True
-                        log.info(
-                            "[%s] 매도 체결 확인: 보유수량 %d → %d주",
-                            pos.symbol, pos.qty, qty_after,
-                        )
+                        sold_qty = pos.qty - qty_after
+                        if qty_after > 0:
+                            log.warning(
+                                "[%s] 매도 부분 체결: %d주 중 %d주만 매도, %d주 잔여",
+                                pos.symbol, pos.qty, sold_qty, qty_after,
+                            )
+                            pos.qty = sold_qty  # 실제 매도된 수량으로 보정
+                        else:
+                            log.info(
+                                "[%s] 매도 전량 체결 확인: %d주 → 0주",
+                                pos.symbol, sold_qty,
+                            )
                         break
                     log.error(
                         "[%s] 매도 체결 미확인: 잔고 %d주 그대로 (attempt %d) — ghost order 의심",
@@ -197,6 +206,10 @@ class MarketMonitor:
                     pos.symbol,
                 )
                 return
+
+            # PnL을 실제 매도 수량 기준으로 재계산
+            pnl_pct = pos.pnl_pct(price)
+            pnl_amount = int((price - pos.avg_price) * pos.qty)
 
             # ── 실제 매도 체결가 조회: 체결 내역 API → 현재가 순으로 시도 ──
             try:
