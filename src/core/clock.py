@@ -7,6 +7,7 @@ KST = pytz.timezone("Asia/Seoul")
 
 MARKET_OPEN = time(9, 0)
 MARKET_CLOSE = time(15, 30)
+ENTRY_ALLOWED_FROM = time(9, 5)   # 장 시작 5분 후부터 매수 허용 (호가 갭 회피)
 PRE_MARKET_OPEN = time(8, 0)    # NXT 시작
 NXT_AFTER_HOURS = time(16, 0)   # NXT 장후 시작
 NXT_CLOSE = time(18, 0)         # NXT 종료
@@ -20,6 +21,12 @@ def is_regular_market(dt: datetime | None = None) -> bool:
     """정규장 여부 (09:00 ~ 15:30)."""
     t = (dt or now_kst()).time()
     return MARKET_OPEN <= t <= MARKET_CLOSE
+
+
+def is_entry_allowed(dt: datetime | None = None) -> bool:
+    """매수 진입 허용 시간 여부 (09:05 ~ 15:20, 장 초반 호가 갭 회피)."""
+    t = (dt or now_kst()).time()
+    return ENTRY_ALLOWED_FROM <= t <= time(15, 20)
 
 
 def is_pre_market(dt: datetime | None = None) -> bool:

@@ -6,7 +6,7 @@ from datetime import datetime
 
 from src.core.config import AppConfig
 from src.core import state_store
-from src.core.clock import is_regular_market
+from src.core.clock import is_regular_market, is_entry_allowed
 from src.core.models import CloseReason, PositionState, SwingCandidate, SwingPosition
 from src.data.kis_client import KisClient
 from src.engine.entry_executor import EntryExecutor
@@ -87,6 +87,10 @@ class MarketMonitor:
         except Exception as e:
             log.error("잔고 조회 실패: %s", e)
             cash = self.cfg.trading.mock_budget or 0
+
+        # 장 시작 5분 이내 매수 금지 (호가 갭 회피)
+        if not is_entry_allowed(now):
+            return
 
         # 오늘 이미 거래된 종목 (진입 또는 당일 청산) → 재진입 금지
         today_str = today
