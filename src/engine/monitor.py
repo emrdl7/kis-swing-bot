@@ -108,34 +108,45 @@ class MarketMonitor:
 
             # KIS 실제 잔고 vs positions.json 대사
             kis_holdings = {
-                item.get("pdno"): int(item.get("hldg_qty", 0) or 0)
+                item.get("pdno"): {
+                    "qty": int(item.get("hldg_qty", 0) or 0),
+                    "avg": float(item.get("pchs_avg_pric", 0) or 0),
+                }
                 for item in (bal.get("output1") or [])
                 if int(item.get("hldg_qty", 0) or 0) > 0
             }
             for pos in active_positions:
-                kis_qty = kis_holdings.get(pos.symbol, 0)
-                if kis_qty == 0:
+                kis = kis_holdings.get(pos.symbol)
+                if kis is None:
                     log.error(
-                        "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=0주 — ghost position으로 판정, 자동 CLOSED 처리",
+                        "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=0주 — ghost position 자동 CLOSED 처리",
                         pos.symbol, pos.qty,
                     )
                     pos.state = PositionState.CLOSED
                     pos.close_reason = CloseReason.RECONCILE_KIS_ZERO
-                    pos.close_price = pos.avg_price  # 실제 청산가 불명, 매입가로 기록
+                    pos.close_price = pos.avg_price
                     pos.close_time = now
                     changed = True
-                elif kis_qty != pos.qty:
-                    log.warning(
-                        "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=%d주 — KIS 기준으로 수량 보정",
-                        pos.symbol, pos.qty, kis_qty,
-                    )
-                    pos.qty = kis_qty
-                    changed = True
-            for symbol, kis_qty in kis_holdings.items():
+                else:
+                    if kis["qty"] != pos.qty:
+                        log.warning(
+                            "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=%d주 — KIS 기준 수량 보정",
+                            pos.symbol, pos.qty, kis["qty"],
+                        )
+                        pos.qty = kis["qty"]
+                        changed = True
+                    if kis["avg"] > 0 and abs(kis["avg"] - pos.avg_price) > 1:
+                        log.warning(
+                            "⚠️ 평균단가 불일치 [%s] positions=%.0f / KIS=%.0f — KIS 기준 보정",
+                            pos.symbol, pos.avg_price, kis["avg"],
+                        )
+                        pos.avg_price = kis["avg"]
+                        changed = True
+            for symbol, kis in kis_holdings.items():
                 if not any(p.symbol == symbol for p in active_positions):
                     log.warning(
                         "⚠️ KIS 잔고 [%s] %d주 있으나 positions.json에 없음 — 수동 매수 또는 누락",
-                        symbol, kis_qty,
+                        symbol, kis["qty"],
                     )
         except Exception as e:
             log.error("잔고 조회/대사 실패: %s", e)
