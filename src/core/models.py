@@ -19,6 +19,7 @@ class CloseReason(str, Enum):
     TRAILING_STOP = "TRAILING_STOP"
     EOD = "EOD"
     MANUAL = "MANUAL"
+    RECONCILE_KIS_ZERO = "RECONCILE_KIS_ZERO"  # KIS 잔고 0 → ghost position 자동 정리
 
 
 @dataclass
@@ -170,7 +171,7 @@ class SwingPosition:
     @classmethod
     def from_dict(cls, d: dict) -> "SwingPosition":
         d = dict(d)
-        d["entry_time"] = datetime.fromisoformat(d["entry_time"])
+        d["entry_time"] = datetime.fromisoformat(d.get("entry_time", datetime.now().isoformat()))
         d["state"] = PositionState(d.get("state", PositionState.ENTERED.value))
         if d.get("close_reason"):
             d["close_reason"] = CloseReason(d["close_reason"])

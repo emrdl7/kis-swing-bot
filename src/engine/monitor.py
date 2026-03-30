@@ -116,14 +116,21 @@ class MarketMonitor:
                 kis_qty = kis_holdings.get(pos.symbol, 0)
                 if kis_qty == 0:
                     log.error(
-                        "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=0주 — ghost position 의심, 수동 확인 필요",
+                        "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=0주 — ghost position으로 판정, 자동 CLOSED 처리",
                         pos.symbol, pos.qty,
                     )
+                    pos.state = PositionState.CLOSED
+                    pos.close_reason = CloseReason.RECONCILE_KIS_ZERO
+                    pos.close_price = pos.avg_price  # 실제 청산가 불명, 매입가로 기록
+                    pos.close_time = now
+                    changed = True
                 elif kis_qty != pos.qty:
                     log.warning(
-                        "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=%d주",
+                        "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=%d주 — KIS 기준으로 수량 보정",
                         pos.symbol, pos.qty, kis_qty,
                     )
+                    pos.qty = kis_qty
+                    changed = True
             for symbol, kis_qty in kis_holdings.items():
                 if not any(p.symbol == symbol for p in active_positions):
                     log.warning(
