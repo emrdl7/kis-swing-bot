@@ -80,10 +80,12 @@ def dashboard():
     candidates = [SwingCandidate.from_dict(d) for d in state_store.load_candidates()]
 
     active = [p for p in positions if p.state != PositionState.CLOSED]
+    from src.core.models import CloseReason
     closed_today = [
         p for p in positions
         if p.state == PositionState.CLOSED
         and p.close_time and p.close_time.strftime("%Y-%m-%d") == today
+        and p.close_reason != CloseReason.RECONCILE_KIS_ZERO  # 잔고 대사 자동처리는 제외
     ]
     active_cands = [c for c in candidates if not c.is_expired()]
 
