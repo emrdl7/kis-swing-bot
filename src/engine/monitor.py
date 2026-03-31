@@ -9,6 +9,7 @@ from src.core import state_store
 from src.core.clock import is_regular_market, is_entry_allowed, now_kst
 from src.core.models import CloseReason, PositionState, SwingCandidate, SwingPosition
 from src.data.kis_client import KisClient
+from src.data.kis_ws_client import KisWebSocketClient
 from src.engine.entry_executor import EntryExecutor
 from src.engine.position_manager import PositionManager
 from src.engine.risk_manager import RiskManager
@@ -26,7 +27,29 @@ class MarketMonitor:
         self.kis = KisClient(cfg.kis)
         self.pos_mgr = PositionManager(cfg.exit)
         self.risk_mgr = RiskManager(cfg.trading)
-        self.entry_exec = EntryExecutor(self.kis, cfg.trading, cfg.screening, dry_run=dry_run)
+
+        # WebSocket 체결통보 클라이언트 (hts_id 설정 시 활성화)
+        self.ws_client: KisWebSocketClient | None = None
+        if cfg.kis.hts_id:
+            try:
+                approval_key = self.kis.get_approval_key()
+                self.ws_client = KisWebSocketClient(
+                    base_url=cfg.kis.base_url,
+                    app_key=cfg.kis.app_key,
+                    app_secret=cfg.kis.app_secret,
+                    hts_id=cfg.kis.hts_id,
+                    approval_key=approval_key,
+                )
+                self.ws_client.start()
+                log.info("WebSocket 체결통보 활성화 (hts_id=%s)", cfg.kis.hts_id)
+            except Exception as e:
+                log.warning("WebSocket 초기화 실패, REST 폴링으로 운영: %s", e)
+                self.ws_client = None
+
+        self.entry_exec = EntryExecutor(
+            self.kis, cfg.trading, cfg.screening,
+            dry_run=dry_run, ws_client=self.ws_client,
+        )
         self._reconcile_miss: dict[str, int] = {}  # 잔고 대사 연속 0 카운터
         # daily_pnl: 재시작 시에도 오늘 누적 손익 유지
         stats = state_store.load_daily_stats()
@@ -50,6 +73,8 @@ class MarketMonitor:
         except KeyboardInterrupt:
             log.info("모니터 종료")
         finally:
+            if self.ws_client:
+                self.ws_client.stop()
             self.kis.close()
 
     # ── 메인 틱 ────────────────────────────────────────────────────────────
@@ -242,30 +267,47 @@ class MarketMonitor:
                 log.error("[%s] 매도 주문 실패: %s", pos.symbol, e)
                 return
 
-            # ── 체결 검증: 잔고 0 확인 (최대 10회, 3s 간격, 최대 30초 대기) ──
             import time as _time
-            _time.sleep(3)
+            order_time = now_kst()
             sell_verified = False
             qty_after = pos.qty
 
-            for attempt in range(10):
-                try:
-                    qty_after = self.kis.get_holding_qty(pos.symbol)
-                    if qty_after == 0:
-                        sell_verified = True
-                        log.info("[%s] 매도 전량 체결 확인: %d주 → 0주", pos.symbol, pos.qty)
+            # ── 체결 검증: WebSocket 우선, REST 폴링 fallback ──
+            if self.ws_client and self.ws_client.is_connected:
+                log.info("[%s] WS 매도 체결 대기 (최대 30초)...", pos.symbol)
+                fill = self.ws_client.wait_for_fill(
+                    pos.symbol, "sell", since=order_time, timeout=30.0
+                )
+                if fill:
+                    sell_verified = True
+                    log.info(
+                        "[%s] WS 매도 체결 확인: %d주 @%.0f원 (미체결잔량 %d주)",
+                        pos.symbol, fill.qty, fill.price, fill.remaining,
+                    )
+                else:
+                    log.warning("[%s] WS 30초 타임아웃 → REST 잔고 확인", pos.symbol)
+
+            if not sell_verified:
+                # REST 폴링 (최대 10회, 3s 간격, 최대 30초 대기)
+                _time.sleep(3)
+                for attempt in range(10):
+                    try:
+                        qty_after = self.kis.get_holding_qty(pos.symbol)
+                        if qty_after == 0:
+                            sell_verified = True
+                            log.info("[%s] 매도 전량 체결 확인: %d주 → 0주", pos.symbol, pos.qty)
+                            break
+                        else:
+                            log.warning(
+                                "[%s] 잔고 %d주 잔여 (attempt %d/10) — 체결 대기 중...",
+                                pos.symbol, qty_after, attempt + 1,
+                            )
+                    except Exception as e:
+                        log.warning("[%s] 매도 체결 확인 실패 (attempt %d): %s", pos.symbol, attempt + 1, e)
+                        sell_verified = True  # API 오류 시 재매도 방지
                         break
-                    else:
-                        log.warning(
-                            "[%s] 잔고 %d주 잔여 (attempt %d/10) — 체결 대기 중...",
-                            pos.symbol, qty_after, attempt + 1,
-                        )
-                except Exception as e:
-                    log.warning("[%s] 매도 체결 확인 실패 (attempt %d): %s", pos.symbol, attempt + 1, e)
-                    sell_verified = True  # API 오류 시 재매도 방지
-                    break
-                if attempt < 9:
-                    _time.sleep(3)
+                    if attempt < 9:
+                        _time.sleep(3)
 
             if not sell_verified and qty_after < pos.qty:
                 # 30초 후에도 잔고 감소는 있음 → 부분체결 가능성

@@ -1,12 +1,14 @@
 """진입 조건 판단 및 매수 실행."""
 from __future__ import annotations
 import logging
+import time
 from datetime import datetime
 from typing import Optional
 
 from src.core.config import TradingConfig, ScreeningConfig
 from src.core.models import SwingCandidate, SwingPosition, PositionState
 from src.data.kis_client import KisClient
+from src.data.kis_ws_client import KisWebSocketClient
 
 log = logging.getLogger(__name__)
 
@@ -18,11 +20,13 @@ class EntryExecutor:
         trading_cfg: TradingConfig,
         screening_cfg: ScreeningConfig,
         dry_run: bool = False,
+        ws_client: Optional[KisWebSocketClient] = None,
     ):
         self.kis = kis
         self.trading = trading_cfg
         self.screening = screening_cfg
         self.dry_run = dry_run
+        self.ws_client = ws_client
 
     def try_entry(
         self,
@@ -70,7 +74,6 @@ class EntryExecutor:
 
         # 매수 실행
         if not self.dry_run:
-            # 매수 전 수량 스냅샷 (수량 델타 검증용)
             qty_before = self.kis.get_holding_qty(candidate.symbol)
 
             try:
@@ -79,31 +82,48 @@ class EntryExecutor:
                 log.error("[%s] 매수 주문 실패: %s", candidate.symbol, e)
                 return None
 
-            # ── 체결 검증: 잔고 수량 증가 확인 (최대 10회, 3s 간격, 최대 30초 대기) ──
-            import time as _time
-            _time.sleep(3)
+            order_time = datetime.now()
             actual_price = current_price
             verified = False
 
-            for attempt in range(10):
-                try:
-                    qty_after = self.kis.get_holding_qty(candidate.symbol)
-                    gained = qty_after - qty_before
-                    if gained > 0:
-                        verified = True
-                        log.info(
-                            "[%s] 매수 체결 확인: 보유수량 %d → %d (+%d주)",
-                            candidate.symbol, qty_before, qty_after, gained,
-                        )
-                        break
-                    log.warning(
-                        "[%s] 매수 수량 미증가 (attempt %d/10): before=%d after=%d — 체결 대기 중...",
-                        candidate.symbol, attempt + 1, qty_before, qty_after,
+            # ── 체결 확인: WebSocket 우선, REST 폴링 fallback ──
+            if self.ws_client and self.ws_client.is_connected:
+                log.info("[%s] WS 체결 대기 (최대 30초)...", candidate.symbol)
+                fill = self.ws_client.wait_for_fill(
+                    candidate.symbol, "buy", since=order_time, timeout=30.0
+                )
+                if fill:
+                    verified = True
+                    actual_price = fill.price
+                    log.info(
+                        "[%s] WS 매수 체결 확인: %d주 @%.0f원 (미체결잔량 %d주)",
+                        candidate.symbol, fill.qty, fill.price, fill.remaining,
                     )
-                except Exception as e:
-                    log.warning("[%s] 체결 확인 실패 (attempt %d): %s", candidate.symbol, attempt + 1, e)
-                if attempt < 9:
-                    _time.sleep(3)
+                else:
+                    log.warning("[%s] WS 30초 타임아웃 → REST 잔고 확인", candidate.symbol)
+
+            if not verified:
+                # REST 폴링 (최대 10회, 3s 간격, 최대 30초 대기)
+                time.sleep(3)
+                for attempt in range(10):
+                    try:
+                        qty_after = self.kis.get_holding_qty(candidate.symbol)
+                        gained = qty_after - qty_before
+                        if gained > 0:
+                            verified = True
+                            log.info(
+                                "[%s] 매수 체결 확인: 보유수량 %d → %d (+%d주)",
+                                candidate.symbol, qty_before, qty_after, gained,
+                            )
+                            break
+                        log.warning(
+                            "[%s] 매수 수량 미증가 (attempt %d/10): before=%d after=%d — 체결 대기 중...",
+                            candidate.symbol, attempt + 1, qty_before, qty_after,
+                        )
+                    except Exception as e:
+                        log.warning("[%s] 체결 확인 실패 (attempt %d): %s", candidate.symbol, attempt + 1, e)
+                    if attempt < 9:
+                        time.sleep(3)
 
             if not verified:
                 log.error(
@@ -113,19 +133,20 @@ class EntryExecutor:
                 )
                 return None
 
-            # ── 실제 체결가 조회: 체결 내역 API (tot_ccld_amt/tot_ccld_qty) → 잔고 평균가 순 ──
-            try:
-                execs = self.kis.get_today_executions(candidate.symbol)
-                buy_execs = [e for e in execs if e.get("sll_buy_dvsn_cd") == "02"]
-                if buy_execs:
-                    total_qty = sum(int(e.get("tot_ccld_qty", 0) or 0) for e in buy_execs)
-                    total_amt = sum(int(e.get("tot_ccld_amt", 0) or 0) for e in buy_execs)
-                    p = total_amt / total_qty if total_qty > 0 else 0
-                    if p > 0:
-                        actual_price = p
-                        log.info("[%s] 매수 체결가 (체결내역 실계산): %.0f원", candidate.symbol, actual_price)
-            except Exception:
-                pass
+            # ── 실제 체결가 조회: 체결 내역 API → 잔고 평균가 순 ──
+            if actual_price == current_price:
+                try:
+                    execs = self.kis.get_today_executions(candidate.symbol)
+                    buy_execs = [e for e in execs if e.get("sll_buy_dvsn_cd") == "02"]
+                    if buy_execs:
+                        total_qty = sum(int(e.get("tot_ccld_qty", 0) or 0) for e in buy_execs)
+                        total_amt = sum(int(e.get("tot_ccld_amt", 0) or 0) for e in buy_execs)
+                        p = total_amt / total_qty if total_qty > 0 else 0
+                        if p > 0:
+                            actual_price = p
+                            log.info("[%s] 매수 체결가 (체결내역 실계산): %.0f원", candidate.symbol, actual_price)
+                except Exception:
+                    pass
 
             if actual_price == current_price:
                 # fallback: 잔고 pchs_avg_pric

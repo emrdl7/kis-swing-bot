@@ -16,6 +16,7 @@ class KisConfig(BaseModel):
     app_secret: str = ""
     account_no: str = ""
     account_type: str = "01"          # 01=실전, 02=모의
+    hts_id: str = ""                  # HTS 로그인 ID (WebSocket 체결통보 구독용)
 
 
 class TradingConfig(BaseModel):
@@ -23,6 +24,7 @@ class TradingConfig(BaseModel):
     max_positions: int = 3
     max_daily_loss_pct: float = 5.0
     commission_pct: float = 0.015
+    mock_budget: int = 0          # 모의투자 고정 예산 (0이면 API 조회)
 
 
 class ExitConfig(BaseModel):
@@ -80,6 +82,7 @@ class AppConfig(BaseSettings):
     kis_app_secret: str = Field("", alias="KIS_APP_SECRET", validation_alias="KIS_APP_SECRET")
     kis_account_no: str = Field("", alias="KIS_ACCOUNT_NO", validation_alias="KIS_ACCOUNT_NO")
     kis_account_type: str = Field("01", alias="KIS_ACCOUNT_TYPE", validation_alias="KIS_ACCOUNT_TYPE")
+    kis_hts_id: str = Field("", alias="KIS_HTS_ID", validation_alias="KIS_HTS_ID")
     # DART: 기존 프로젝트는 OPENDART_API_KEY 사용
     dart_api_key: str = Field("", alias="OPENDART_API_KEY", validation_alias="OPENDART_API_KEY")
 
@@ -117,6 +120,8 @@ class AppConfig(BaseSettings):
             self.kis = self.kis.model_copy(update={"account_no": self.kis_account_no})
         if self.kis_account_type:
             self.kis = self.kis.model_copy(update={"account_type": self.kis_account_type})
+        if self.kis_hts_id:
+            self.kis = self.kis.model_copy(update={"hts_id": self.kis_hts_id})
         if self.dart_api_key:
             self.dart = self.dart.model_copy(update={"api_key": self.dart_api_key})
 

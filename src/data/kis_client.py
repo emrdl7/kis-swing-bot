@@ -288,5 +288,25 @@ class KisClient:
         data = self.get_balance()
         return data.get("output1", []) or []
 
+    def get_approval_key(self) -> str:
+        """WebSocket 접속키 발급 (/oauth2/Approval).
+
+        체결통보 WebSocket 구독에 필요한 approval_key를 발급합니다.
+        access_token과 별개이며 유효기간은 24시간입니다.
+        """
+        url = f"{self.cfg.base_url}/oauth2/Approval"
+        payload = {
+            "grant_type": "client_credentials",
+            "appkey": self.cfg.app_key,
+            "secretkey": self.cfg.app_secret,
+        }
+        resp = self._client.post(url, json=payload)
+        resp.raise_for_status()
+        key = resp.json().get("approval_key", "")
+        if not key:
+            raise RuntimeError("approval_key 발급 실패: 응답에 키 없음")
+        log.info("WebSocket 접속키 발급 완료")
+        return key
+
     def close(self) -> None:
         self._client.close()
