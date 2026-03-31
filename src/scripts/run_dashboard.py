@@ -35,6 +35,22 @@ def _fetch_prices(symbols: list[str]) -> dict[str, float]:
     return result
 
 
+_REASON_KO = {
+    "TAKE_PROFIT": "목표가 도달",
+    "STOP_LOSS": "손절",
+    "TRAILING_STOP": "트레일링 스탑",
+    "EOD": "장 마감",
+    "MANUAL": "수동",
+    "RECONCILE_KIS_ZERO": "KIS 잔고 0",
+}
+
+
+def _reason_str(reason) -> str:
+    if reason is None:
+        return "-"
+    return _REASON_KO.get(reason.value, reason.value)
+
+
 def _pnl_color(pnl: float) -> str:
     if pnl > 0:
         return "#00c9a7"
@@ -155,7 +171,7 @@ def dashboard():
         pnl_amt = int((p.close_price - p.avg_price) * p.qty)
         pnl_pct = p.pnl_pct(p.close_price)
         pc = _pnl_color(pnl_pct)
-        reason = p.close_reason.value if p.close_reason else "-"
+        reason = _reason_str(p.close_reason)
         closed_rows += f"""
         <tr>
           <td><b>{p.name}</b><br><small style="color:#888">{p.symbol}</small></td>
