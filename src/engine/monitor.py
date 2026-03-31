@@ -29,6 +29,7 @@ class MarketMonitor:
         self.entry_exec = EntryExecutor(self.kis, cfg.trading, cfg.screening, dry_run=dry_run)
         self._daily_pnl: float = 0.0
         self._last_date: str = ""
+        self._reconcile_miss: dict[str, int] = {}  # 잔고 대사 연속 0 카운터
 
     def run_forever(self) -> None:
         log.info("장중 모니터 시작 (interval=%ds, dry_run=%s)", POLL_INTERVAL_SEC, self.dry_run)
@@ -118,16 +119,26 @@ class MarketMonitor:
             for pos in active_positions:
                 kis = kis_holdings.get(pos.symbol)
                 if kis is None:
-                    log.error(
-                        "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=0주 — ghost position 자동 CLOSED 처리",
-                        pos.symbol, pos.qty,
-                    )
-                    pos.state = PositionState.CLOSED
-                    pos.close_reason = CloseReason.RECONCILE_KIS_ZERO
-                    pos.close_price = pos.avg_price
-                    pos.close_time = now
-                    changed = True
+                    miss = self._reconcile_miss.get(pos.symbol, 0) + 1
+                    self._reconcile_miss[pos.symbol] = miss
+                    if miss < 2:
+                        log.warning(
+                            "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=0주 — API 지연 가능성, 다음 틱 재확인 (miss=%d)",
+                            pos.symbol, pos.qty, miss,
+                        )
+                    else:
+                        log.error(
+                            "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=0주 — %d틱 연속 확인, ghost position CLOSED 처리",
+                            pos.symbol, pos.qty, miss,
+                        )
+                        pos.state = PositionState.CLOSED
+                        pos.close_reason = CloseReason.RECONCILE_KIS_ZERO
+                        pos.close_price = pos.avg_price
+                        pos.close_time = now
+                        self._reconcile_miss.pop(pos.symbol, None)
+                        changed = True
                 else:
+                    self._reconcile_miss.pop(pos.symbol, None)
                     if kis["qty"] != pos.qty:
                         log.warning(
                             "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=%d주 — KIS 기준 수량 보정",
