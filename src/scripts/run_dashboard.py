@@ -131,7 +131,7 @@ def dashboard():
         pos_rows += f"""
         <tr>
           <td><b>{p.name}</b><br><small style="color:#888">{p.symbol}</small></td>
-          <td>{int(p.avg_price):,}</td>
+          <td>{round(p.avg_price):,}</td>
           <td style="color:#fff;font-weight:bold">{cur_str}</td>
           <td style="color:{pc};font-weight:bold">{pnl_pct:+.2f}%<br>
             <small style="color:{pc}">{pnl_amt:+,}원</small></td>
@@ -179,7 +179,7 @@ def dashboard():
         closed_rows += f"""
         <tr>
           <td><b>{p.name}</b><br><small style="color:#888">{p.symbol}</small></td>
-          <td>{int(p.avg_price):,}</td>
+          <td>{round(p.avg_price):,}</td>
           <td>{int(p.close_price):,}</td>
           <td style="color:{pc};font-weight:bold">{pnl_pct:+.2f}%</td>
           <td style="color:{pc}">{pnl_amt:+,}원</td>
@@ -193,7 +193,7 @@ def dashboard():
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="refresh" content="30">
+  <meta http-equiv="refresh" content="10">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <title>KIS Swing Bot</title>
   <style>
