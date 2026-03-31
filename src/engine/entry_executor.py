@@ -79,13 +79,13 @@ class EntryExecutor:
                 log.error("[%s] 매수 주문 실패: %s", candidate.symbol, e)
                 return None
 
-            # ── 체결 검증: 잔고 수량 증가 확인 (최대 3회, 1s 간격) ──
+            # ── 체결 검증: 잔고 수량 증가 확인 (최대 10회, 3s 간격, 최대 30초 대기) ──
             import time as _time
-            _time.sleep(2)
+            _time.sleep(3)
             actual_price = current_price
             verified = False
 
-            for attempt in range(3):
+            for attempt in range(10):
                 try:
                     qty_after = self.kis.get_holding_qty(candidate.symbol)
                     gained = qty_after - qty_before
@@ -97,13 +97,13 @@ class EntryExecutor:
                         )
                         break
                     log.warning(
-                        "[%s] 매수 수량 미증가 (attempt %d): before=%d after=%d",
+                        "[%s] 매수 수량 미증가 (attempt %d/10): before=%d after=%d — 체결 대기 중...",
                         candidate.symbol, attempt + 1, qty_before, qty_after,
                     )
                 except Exception as e:
                     log.warning("[%s] 체결 확인 실패 (attempt %d): %s", candidate.symbol, attempt + 1, e)
-                if attempt < 2:
-                    _time.sleep(1)
+                if attempt < 9:
+                    _time.sleep(3)
 
             if not verified:
                 log.error(

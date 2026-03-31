@@ -238,49 +238,40 @@ class MarketMonitor:
                 log.error("[%s] 매도 주문 실패: %s", pos.symbol, e)
                 return
 
-            # ── 체결 검증: 잔고 수량 감소 확인 (최대 3회, 1s 간격) ──
+            # ── 체결 검증: 잔고 0 확인 (최대 10회, 3s 간격, 최대 30초 대기) ──
             import time as _time
-            _time.sleep(2)
+            _time.sleep(3)
             sell_verified = False
+            qty_after = pos.qty
 
-            qty_after = pos.qty  # 기본값: 변화 없음
-            for attempt in range(3):
+            for attempt in range(10):
                 try:
                     qty_after = self.kis.get_holding_qty(pos.symbol)
                     if qty_after == 0:
-                        # 전량 매도 확인
                         sell_verified = True
                         log.info("[%s] 매도 전량 체결 확인: %d주 → 0주", pos.symbol, pos.qty)
                         break
-                    elif qty_after < pos.qty:
-                        # 잔고 API 지연 가능성 → 추가 대기 후 재확인
-                        if attempt < 2:
-                            log.warning(
-                                "[%s] 잔고 %d주 잔여 (attempt %d) — API 지연 가능성, 재확인 중...",
-                                pos.symbol, qty_after, attempt + 1,
-                            )
-                            _time.sleep(2)
-                            continue
-                        # 3회 모두 잔여 → 부분체결로 확정
-                        sell_verified = True
-                        sold_qty = pos.qty - qty_after
-                        log.warning(
-                            "[%s] 매도 부분 체결 확정: %d주 중 %d주 매도, %d주 잔여 — KIS 앱 확인 필요",
-                            pos.symbol, pos.qty, sold_qty, qty_after,
-                        )
-                        pos.qty = sold_qty  # 실제 매도된 수량으로 보정
-                        break
                     else:
-                        log.error(
-                            "[%s] 매도 체결 미확인: 잔고 %d주 그대로 (attempt %d) — ghost order 의심",
+                        log.warning(
+                            "[%s] 잔고 %d주 잔여 (attempt %d/10) — 체결 대기 중...",
                             pos.symbol, qty_after, attempt + 1,
                         )
                 except Exception as e:
                     log.warning("[%s] 매도 체결 확인 실패 (attempt %d): %s", pos.symbol, attempt + 1, e)
-                    sell_verified = True  # API 오류 시 정상 처리 (재매도 방지)
+                    sell_verified = True  # API 오류 시 재매도 방지
                     break
-                if attempt < 2:
-                    _time.sleep(1)
+                if attempt < 9:
+                    _time.sleep(3)
+
+            if not sell_verified and qty_after < pos.qty:
+                # 30초 후에도 잔고 감소는 있음 → 부분체결 가능성
+                sold_qty = pos.qty - qty_after
+                sell_verified = True
+                log.warning(
+                    "[%s] 매도 부분 체결 확정: %d주 중 %d주 매도, %d주 잔여 — KIS 앱 확인 필요",
+                    pos.symbol, pos.qty, sold_qty, qty_after,
+                )
+                pos.qty = sold_qty
 
             if not sell_verified:
                 log.error(
