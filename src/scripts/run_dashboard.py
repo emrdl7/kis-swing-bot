@@ -96,7 +96,9 @@ def dashboard():
         bal = _kis.get_balance()
         o2 = (bal.get("output2") or [{}])[0]
         account_cash = int(o2.get("dnca_tot_amt", 0))      # 예수금 총액
-        order_cash = int(o2.get("ord_psbl_cash", 0))        # 주문가능액
+        order_cash = int(o2.get("ord_psbl_cash", 0) or 0)  # 주문가능액
+        if order_cash == 0:
+            order_cash = int(o2.get("prvs_rcdl_excc_amt", 0) or 0)  # 모의투자 fallback
         eval_amt = int(o2.get("evlu_amt_smtl_amt", 0))      # 유가평가액
         total_eval = int(o2.get("tot_evlu_amt", 0))         # 총평가금액
     except Exception:
