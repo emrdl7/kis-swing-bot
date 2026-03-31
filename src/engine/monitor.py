@@ -6,7 +6,7 @@ from datetime import datetime
 
 from src.core.config import AppConfig
 from src.core import state_store
-from src.core.clock import is_regular_market, is_entry_allowed
+from src.core.clock import is_regular_market, is_entry_allowed, now_kst
 from src.core.models import CloseReason, PositionState, SwingCandidate, SwingPosition
 from src.data.kis_client import KisClient
 from src.engine.entry_executor import EntryExecutor
@@ -27,9 +27,12 @@ class MarketMonitor:
         self.pos_mgr = PositionManager(cfg.exit)
         self.risk_mgr = RiskManager(cfg.trading)
         self.entry_exec = EntryExecutor(self.kis, cfg.trading, cfg.screening, dry_run=dry_run)
-        self._daily_pnl: float = 0.0
-        self._last_date: str = ""
         self._reconcile_miss: dict[str, int] = {}  # 잔고 대사 연속 0 카운터
+        # daily_pnl: 재시작 시에도 오늘 누적 손익 유지
+        stats = state_store.load_daily_stats()
+        today_str = now_kst().strftime("%Y-%m-%d")
+        self._daily_pnl: float = stats.get("realized_pnl", 0.0) if stats.get("date") == today_str else 0.0
+        self._last_date: str = today_str if stats.get("date") == today_str else ""
 
     def run_forever(self) -> None:
         log.info("장중 모니터 시작 (interval=%ds, dry_run=%s)", POLL_INTERVAL_SEC, self.dry_run)
@@ -37,7 +40,7 @@ class MarketMonitor:
             while True:
                 self._tick()
                 # 마감 직전(15:25~15:30): 5초 간격으로 폴링 강화 (동시호가 가격 변동 대응)
-                now = datetime.now()
+                now = now_kst()
                 from datetime import time as _dt
                 if _dt(15, 25) <= now.time() <= _dt(15, 30):
                     sleep_sec = 5
@@ -52,12 +55,13 @@ class MarketMonitor:
     # ── 메인 틱 ────────────────────────────────────────────────────────────
 
     def _tick(self) -> None:
-        now = datetime.now()
+        now = now_kst()
         today = now.strftime("%Y-%m-%d")
 
         if today != self._last_date:
             self._daily_pnl = 0.0
             self._last_date = today
+            state_store.save_daily_stats({"date": today, "realized_pnl": 0.0, "trade_count": 0})
             log.info("날짜 변경 → 일일 PnL 초기화")
 
         if not is_regular_market(now):
@@ -121,9 +125,9 @@ class MarketMonitor:
                 if kis is None:
                     miss = self._reconcile_miss.get(pos.symbol, 0) + 1
                     self._reconcile_miss[pos.symbol] = miss
-                    if miss < 2:
+                    if miss < 3:
                         log.warning(
-                            "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=0주 — API 지연 가능성, 다음 틱 재확인 (miss=%d)",
+                            "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=0주 — API 지연 가능성, 다음 틱 재확인 (miss=%d/3)",
                             pos.symbol, pos.qty, miss,
                         )
                     else:
@@ -320,6 +324,12 @@ class MarketMonitor:
         pos.close_time = datetime.now()
         self._daily_pnl += pnl_amount
         log.info("[%s] 오늘 누적 PnL: %+d원", pos.symbol, int(self._daily_pnl))
+        # 재시작 시에도 유지되도록 영속 저장
+        stats = state_store.load_daily_stats()
+        stats["date"] = now_kst().strftime("%Y-%m-%d")
+        stats["realized_pnl"] = self._daily_pnl
+        stats["trade_count"] = stats.get("trade_count", 0) + 1
+        state_store.save_daily_stats(stats)
 
         apple_notes.report_trade(
             "매도", pos.symbol, pos.name, price, pos.qty,
