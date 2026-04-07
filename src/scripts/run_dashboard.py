@@ -131,6 +131,7 @@ def dashboard():
         pos_rows += f"""
         <tr>
           <td><b>{p.name}</b><br><small style="color:#888">{p.symbol}</small></td>
+          <td>{p.qty}</td>
           <td>{round(p.avg_price):,}</td>
           <td style="color:#fff;font-weight:bold">{cur_str}</td>
           <td style="color:{pc};font-weight:bold">{pnl_pct:+.2f}%<br>
@@ -142,7 +143,7 @@ def dashboard():
         </tr>"""
 
     if not pos_rows:
-        pos_rows = '<tr><td colspan="8" style="text-align:center;color:#666">보유 포지션 없음</td></tr>'
+        pos_rows = '<tr><td colspan="9" style="text-align:center;color:#666">보유 포지션 없음</td></tr>'
 
     # ── 후보 종목 테이블 ──────────────────────────────────────────
     cand_rows = ""
@@ -282,7 +283,7 @@ def dashboard():
     <div class="table-wrap">
     <table>
       <thead><tr>
-        <th>종목</th><th>매수가</th><th>현재가</th><th>수익률 / 손익</th><th>상태</th>
+        <th>종목</th><th>수량</th><th>매수가</th><th>현재가</th><th>수익률 / 손익</th><th>상태</th>
         <th class="hide-mobile">목표가</th><th class="hide-mobile">손절가</th><th class="hide-mobile">트레일링</th>
       </tr></thead>
       <tbody>{pos_rows}</tbody>

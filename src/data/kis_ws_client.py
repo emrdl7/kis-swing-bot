@@ -74,10 +74,12 @@ class KisWebSocketClient:
 
     @staticmethod
     def _build_ws_url(base_url: str) -> str:
-        url = base_url.replace("https://", "wss://").replace("http://", "ws://")
-        if not url.endswith("/websocket"):
-            url += "/websocket"
-        return url
+        # KIS 실시간 WebSocket 전용 서버 (REST API 서버와 다름)
+        # 모의투자: ws://ops.koreainvestment.com:31000
+        # 실전투자: ws://ops.koreainvestment.com:21000
+        if "openapivts" in base_url:
+            return "ws://ops.koreainvestment.com:31000"
+        return "ws://ops.koreainvestment.com:21000"
 
     # ── 라이프사이클 ──────────────────────────────────────────────────────────
 
@@ -144,15 +146,8 @@ class KisWebSocketClient:
     async def _connect_and_run(self) -> None:
         import websockets
 
-        ssl_ctx: Optional[ssl.SSLContext] = None
-        if self._is_mock:
-            ssl_ctx = ssl.create_default_context()
-            ssl_ctx.check_hostname = False
-            ssl_ctx.verify_mode = ssl.CERT_NONE
-
         async with websockets.connect(
             self._ws_url,
-            ssl=ssl_ctx,
             ping_interval=30,
             ping_timeout=10,
         ) as ws:
