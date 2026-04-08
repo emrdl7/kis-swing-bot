@@ -57,6 +57,7 @@ class DebateEngine:
     def run(self, context: dict) -> tuple[list[SwingCandidate], str]:
         """토론 실행 → (candidates, transcript)."""
         self._transcript = []
+        self._budget_text = context.get("budget_text", "")
         today = context.get("today", datetime.now().strftime("%Y-%m-%d"))
         self._log(f"# {today} 스윙봇 종목발굴 토론 보고서\n")
 
@@ -132,8 +133,11 @@ class DebateEngine:
         dart_text = context.get("dart_text", "")
         today = context.get("today", "")
 
+        budget_text = context.get("budget_text", "")
+
         user_msg = f"""[{today}] 오늘 뉴스와 공시를 분석하여 스윙 트레이딩 유망 종목을 추천하십시오.
 이 단계에서는 종목명과 추천 이유만 작성하고, 가격은 입력하지 마십시오.
+{budget_text}
 
 === 오늘 뉴스 ===
 {news_text[:1500]}
@@ -229,6 +233,7 @@ class DebateEngine:
 반드시 JSON 형식으로만 응답하십시오."""
 
         user_msg = f"""[{today}] 최종 종목 선정
+{self._budget_text}
 
 === 실시간 주가 데이터 ===
 {price_text}

@@ -116,7 +116,37 @@ def main() -> None:
                 log.warning("기존 후보 가격 조회 실패 [%s]: %s", cand.symbol, e)
         state_store.save_candidates([c.to_dict() for c in active_candidates])
 
-    # 4) LLM 멀티에이전트 토론 (실시간 가격 연동)
+    # 4) 잔고 조회 → 종목당 투자 가능 금액 계산
+    max_pos = cfg.trading.max_positions
+    try:
+        bal = kis.get_balance()
+        o2 = (bal.get("output2") or [{}])[0]
+        total_cash = 0
+        for field in ("ord_psbl_cash", "prvs_rcdl_excc_amt"):
+            v = int(o2.get(field, 0) or 0)
+            if v > 0:
+                total_cash = v
+                break
+        if total_cash == 0:
+            total_cash = int(o2.get("dnca_tot_amt", 0) or 0)
+    except Exception as e:
+        log.warning("잔고 조회 실패: %s — 가격 제한 없이 진행", e)
+        total_cash = 0
+
+    # 소액(300만 이하)이면 균등배분, 아니면 설정 비중
+    if total_cash > 0 and total_cash < 3_000_000:
+        per_stock_budget = total_cash // max_pos
+    elif total_cash > 0:
+        per_stock_budget = int(total_cash * cfg.trading.position_size_pct)
+    else:
+        per_stock_budget = 0
+
+    budget_text = ""
+    if per_stock_budget > 0:
+        budget_text = f"\n⚠️ 종목당 투자 가능 금액: 약 {per_stock_budget:,}원. 주당 가격이 이 금액을 초과하는 종목은 추천하지 마십시오."
+        log.info("종목당 투자 가능 금액: %s원 (총 잔고 %s원)", f"{per_stock_budget:,}", f"{total_cash:,}")
+
+    # 5) LLM 멀티에이전트 토론 (실시간 가격 연동)
     log.info("LLM 멀티에이전트 토론 시작...")
     llm = LLMClient(model=cfg.agents.model, max_tokens=cfg.agents.max_tokens)
 
@@ -135,6 +165,7 @@ def main() -> None:
         "news_text": news_text,
         "dart_text": dart_text,
         "news_summary": news_text[:500],
+        "budget_text": budget_text,
     }
 
     new_candidates, transcript = engine.run(context)

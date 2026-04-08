@@ -28,6 +28,23 @@ class EntryExecutor:
         self.dry_run = dry_run
         self.ws_client = ws_client
 
+    def _dynamic_size_pct(self, cash: int) -> float:
+        """자본금 규모에 따라 종목당 투자 비중을 동적 조정.
+
+        소액일수록 비중을 높여 1주라도 매수 가능하게 하고,
+        자본금이 커지면 설정값(position_size_pct)으로 수렴.
+        """
+        base = self.trading.position_size_pct
+        max_pos = self.trading.max_positions
+        if cash <= 0:
+            return base
+        # 종목당 최소 투자금: 1/max_positions (균등 배분)
+        equal_pct = 1.0 / max_pos
+        # 소액(300만원 이하)이면 균등 배분, 이상이면 설정값 사용
+        if cash < 3_000_000:
+            return equal_pct
+        return base
+
     def try_entry(
         self,
         candidate: SwingCandidate,
@@ -57,10 +74,12 @@ class EntryExecutor:
         if not (low <= current_price <= high):
             return None
 
-        # 투자금 계산
-        invest_amount = int(cash * self.trading.position_size_pct)
-        if invest_amount < 100_000:
-            log.warning("[%s] 투자 가능 금액 부족: %d원", candidate.symbol, invest_amount)
+        # 투자금 계산 (자본금 규모에 따라 비중 동적 조정)
+        pct = self._dynamic_size_pct(cash)
+        invest_amount = int(cash * pct)
+        if invest_amount < int(current_price):
+            log.warning("[%s] 투자 가능 금액(%s원) < 주가(%s원), 매수 불가",
+                        candidate.symbol, f"{invest_amount:,}", f"{int(current_price):,}")
             return None
 
         qty = max(1, invest_amount // int(current_price))
