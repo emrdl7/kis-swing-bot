@@ -54,8 +54,8 @@ class DebateEngine:
 
     # ── 공개 API ──────────────────────────────────────────────────────────
 
-    def run(self, context: dict) -> tuple[list[SwingCandidate], str]:
-        """토론 실행 → (candidates, transcript)."""
+    def run(self, context: dict) -> tuple[list[SwingCandidate], str, list[SwingCandidate]]:
+        """토론 실행 → (candidates, transcript, reserves)."""
         self._transcript = []
         self._budget_text = context.get("budget_text", "")
         today = context.get("today", datetime.now().strftime("%Y-%m-%d"))
@@ -121,9 +121,12 @@ class DebateEngine:
                 f"- 선정 근거: {r.final_rationale}\n"
             )
 
-        candidates = self._to_candidates(debate_results)
-        log.info("최종 후보: %d개", len(candidates))
-        return candidates, "\n".join(self._transcript)
+        max_primary = self.screening_cfg.max_candidates
+        all_candidates = self._to_candidates(debate_results)
+        candidates = all_candidates[:max_primary]
+        reserves = all_candidates[max_primary:]
+        log.info("최종 후보: %d개 (예비: %d개)", len(candidates), len(reserves))
+        return candidates, "\n".join(self._transcript), reserves
 
     # ── Round 0: 종목만 추천 ────────────────────────────────────────────
 
@@ -226,7 +229,7 @@ class DebateEngine:
 선정 기준:
 1. 2인 이상 에이전트가 동의한 종목 우선
 2. 평균 conviction 0.6 이상인 종목만 선정
-3. 최대 3개 종목 선정 (신중하게)
+3. 최대 5개 종목을 신뢰도 순으로 선정 (상위 3개는 정규 후보, 나머지는 예비 후보)
 4. 진입가/목표가/손절가는 반드시 실시간 현재가 기준으로 현실적인 값 사용
 5. 동일 섹터 종목이 많으면 가장 유망한 1개만 선택
 
@@ -291,11 +294,10 @@ class DebateEngine:
     # ── 변환 ────────────────────────────────────────────────────────────
 
     def _to_candidates(self, results: list[DebateResult]) -> list[SwingCandidate]:
-        max_cands = self.screening_cfg.max_candidates
         expiry_days = self.screening_cfg.entry_expiry_days
         now = datetime.now()
         candidates = []
-        for r in results[:max_cands]:
+        for r in results:
             candidates.append(SwingCandidate(
                 symbol=r.symbol,
                 name=r.name,

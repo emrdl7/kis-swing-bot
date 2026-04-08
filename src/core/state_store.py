@@ -64,6 +64,14 @@ def save_token_cache(data: dict) -> None:
     save("token_cache", data)
 
 
+def load_reserves() -> list[dict]:
+    return load("reserves", [])
+
+
+def save_reserves(reserves: list[dict]) -> None:
+    save("reserves", reserves)
+
+
 def load_daily_stats() -> dict:
     return load("daily_stats", {"date": "", "realized_pnl": 0.0, "trade_count": 0})
 

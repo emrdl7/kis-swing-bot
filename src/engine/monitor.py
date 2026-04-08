@@ -233,6 +233,26 @@ class MarketMonitor:
             remaining_candidates.append(cand)
 
         if dropped:
+            # 예비후보에서 승격
+            max_cands = self.cfg.screening.max_candidates
+            if len(remaining_candidates) < max_cands:
+                reserves = [SwingCandidate.from_dict(d) for d in state_store.load_reserves()]
+                existing_symbols = {c.symbol for c in remaining_candidates}
+                promoted = []
+                for r in reserves:
+                    if r.symbol not in existing_symbols and not r.is_expired(now):
+                        remaining_candidates.append(r)
+                        existing_symbols.add(r.symbol)
+                        promoted.append(r)
+                        log.info("[%s] 예비후보 → 정규 승격: %s (신뢰: %.0f%%)", r.symbol, r.name, r.consensus_score * 100)
+                        if len(remaining_candidates) >= max_cands:
+                            break
+                if promoted:
+                    # 승격된 후보는 reserves에서 제거
+                    promoted_symbols = {p.symbol for p in promoted}
+                    reserves = [r for r in reserves if r.symbol not in promoted_symbols]
+                    state_store.save_reserves([r.to_dict() for r in reserves])
+
             state_store.save_candidates([c.to_dict() for c in remaining_candidates])
             candidates = remaining_candidates
 

@@ -168,9 +168,9 @@ def main() -> None:
         "budget_text": budget_text,
     }
 
-    new_candidates, transcript = engine.run(context)
+    new_candidates, transcript, reserves = engine.run(context)
     kis.close()
-    log.info("신규 발굴 후보: %d개", len(new_candidates))
+    log.info("신규 발굴 후보: %d개 (예비: %d개)", len(new_candidates), len(reserves))
 
     apple_notes.report_debate(transcript, today)
 
@@ -195,6 +195,15 @@ def main() -> None:
             f"{int(c.target_price):,}", f"{int(c.stop_price):,}",
             c.consensus_score * 100, exp_str,
         )
+
+    # 예비후보 저장 (정규 후보와 중복 제거)
+    merged_symbols = {c.symbol for c in merged}
+    reserve_list = [r for r in reserves if r.symbol not in merged_symbols]
+    state_store.save_reserves([r.to_dict() for r in reserve_list])
+    if reserve_list:
+        log.info("예비후보 %d개 저장", len(reserve_list))
+        for i, r in enumerate(reserve_list, 1):
+            log.info("  [예비%d] %s(%s) 신뢰: %.0f%%", i, r.name, r.symbol, r.consensus_score * 100)
 
     apple_notes.report_morning_screen([c.to_dict() for c in merged], today)
     log.info("=== 장 전 발굴 완료 ===")
