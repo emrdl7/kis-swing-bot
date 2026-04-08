@@ -152,9 +152,8 @@ class KisWebSocketClient:
     async def _connect_and_run(self) -> None:
         import websockets
 
-        ssl_ctx: Optional[ssl.SSLContext] = None
+        ssl_ctx = ssl.create_default_context()
         if self._is_mock:
-            ssl_ctx = ssl.create_default_context()
             ssl_ctx.check_hostname = False
             ssl_ctx.verify_mode = ssl.CERT_NONE
 
