@@ -133,13 +133,21 @@ class KisWebSocketClient:
 
     async def _ws_main(self) -> None:
         retry_delay = 5
+        fail_count = 0
+        max_fails = 3
         while self._running:
             try:
                 await self._connect_and_run()
                 retry_delay = 5
+                fail_count = 0
             except Exception as e:
                 self._connected.clear()
-                log.warning("WebSocket 연결 끊김: %s — %ds 후 재연결", e, retry_delay)
+                fail_count += 1
+                if fail_count >= max_fails:
+                    log.warning("WebSocket %d회 연속 실패 → REST 폴링으로 전환", max_fails)
+                    self._running = False
+                    return
+                log.warning("WebSocket 연결 끊김: %s — %ds 후 재연결 (%d/%d)", e, retry_delay, fail_count, max_fails)
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 60)
 
