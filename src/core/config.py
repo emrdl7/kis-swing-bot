@@ -43,6 +43,7 @@ class ScreeningConfig(BaseModel):
     min_trade_amount: int = 5_000_000_000
     entry_zone_slack_pct: float = 1.0
     entry_expiry_days: int = 3
+    drop_above_entry_pct: float = 5.0  # 진입구간 상단 대비 이 % 이상 위면 후보 제거
 
 
 class AgentsConfig(BaseModel):

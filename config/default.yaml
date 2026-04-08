@@ -8,8 +8,8 @@ trading:
   mock_budget: 0
 exit:
   take_profit_pct: 4.0
-  stop_loss_pct: 2.5
-  trailing_activate_pct: 2.0
+  stop_loss_pct: 3.0
+  trailing_activate_pct: 2.5
   trailing_pct: 1.5
   eod_sell_hhmm: 1510
   eod_sell_enabled: false
@@ -20,6 +20,7 @@ screening:
   min_trade_amount: 5000000000
   entry_zone_slack_pct: 1.5
   entry_expiry_days: 3
+  drop_above_entry_pct: 5.0
 agents:
   model: claude-opus-4-6
   max_tokens: 2000

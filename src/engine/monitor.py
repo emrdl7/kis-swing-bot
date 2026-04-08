@@ -205,19 +205,45 @@ class MarketMonitor:
         active_now = [p for p in positions if p.state != PositionState.CLOSED]
         entered_symbols: set[str] = set()  # 이번 틱에서 진입한 종목
 
-        remaining_candidates = list(candidates)
+        # 후보 가격 일괄 조회 + 진입 불가 후보 자동 제거
+        drop_pct = self.cfg.screening.drop_above_entry_pct / 100.0
+        remaining_candidates = []
+        cand_prices: dict[str, float] = {}
+        dropped = False
         for cand in candidates:
             if cand.is_expired(now):
+                dropped = True
                 continue
+            try:
+                pd = self.kis.get_price(cand.symbol)
+                cpx = float(pd.get("stck_prpr", 0) or 0)
+                if cpx > 0 and cand.entry_high > 0:
+                    gap = (cpx - cand.entry_high) / cand.entry_high
+                    if gap > drop_pct:
+                        log.info(
+                            "[%s] 후보 제거: 현재가 %s원이 진입상단 %s원 대비 +%.1f%% (기준 %.1f%%)",
+                            cand.symbol, f"{int(cpx):,}", f"{int(cand.entry_high):,}",
+                            gap * 100, self.cfg.screening.drop_above_entry_pct,
+                        )
+                        dropped = True
+                        continue
+                cand_prices[cand.symbol] = cpx
+            except Exception:
+                pass
+            remaining_candidates.append(cand)
+
+        if dropped:
+            state_store.save_candidates([c.to_dict() for c in remaining_candidates])
+            candidates = remaining_candidates
+
+        for cand in remaining_candidates:
             # 당일 이미 거래된 종목은 재진입 금지
             if cand.symbol in traded_today:
                 continue
+            px = cand_prices.get(cand.symbol, 0)
+            if px <= 0:
+                continue
             try:
-                price_data = self.kis.get_price(cand.symbol)
-                px = float(price_data.get("stck_prpr", 0) or 0)
-                if px <= 0:
-                    continue
-
                 new_pos = self.entry_exec.try_entry(cand, px, cash, active_now)
                 if new_pos:
                     positions.append(new_pos)
