@@ -96,6 +96,12 @@ def main() -> None:
         trade_amount = int(item.get("acml_tr_pbmn", 0) or 0)
         price = float(item.get("stck_prpr", 0) or 0)
 
+        # ETF/ETN/인버스/레버리지 제외
+        name = item.get("hts_kor_isnm", "")
+        if any(kw in name for kw in ("KODEX", "TIGER", "KOSEF", "KBSTAR", "ARIRANG",
+                                      "SOL", "ACE", "HANARO", "인버스", "레버리지",
+                                      "2X", "곱버스", "ETN", "선물")):
+            continue
         # 최소 등락률 필터
         if change_pct < cb.min_change_pct:
             continue
