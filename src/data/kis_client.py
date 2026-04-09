@@ -288,6 +288,41 @@ class KisClient:
         data = self.get_balance()
         return data.get("output1", []) or []
 
+    def get_volume_rank(self, sort_by: str = "3", market: str = "J",
+                        min_price: int = 0, max_price: int = 1000000,
+                        min_volume: int = 0) -> list[dict]:
+        """거래량/거래금액 순위 조회.
+
+        Args:
+            sort_by: "0"=평균거래량, "1"=거래증가율, "3"=거래금액순
+            market: "J"=KRX, "NX"=NXT, "UN"=통합
+            min_price: 최소 가격
+            max_price: 최대 가격
+            min_volume: 최소 거래량
+        """
+        self.ensure_token()
+        tr_id = "FHPST01710000"
+        url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/quotations/volume-rank"
+        params = {
+            "FID_COND_MRKT_DIV_CODE": market,
+            "FID_COND_SCR_DIV_CODE": "20171",
+            "FID_INPUT_ISCD": "0000",
+            "FID_DIV_CLS_CODE": "0",
+            "FID_BLNG_CLS_CODE": sort_by,
+            "FID_TRGT_CLS_CODE": "111111111",
+            "FID_TRGT_EXLS_CLS_CODE": "0000000000",
+            "FID_INPUT_PRICE_1": str(min_price),
+            "FID_INPUT_PRICE_2": str(max_price),
+            "FID_VOL_CNT": str(min_volume),
+            "FID_INPUT_DATE_1": "",
+        }
+        try:
+            data = self._get_with_retry(url, self._headers(tr_id), params)
+            return data.get("output", []) or []
+        except Exception as e:
+            log.warning("거래량순위 조회 실패: %s", e)
+            return []
+
     def get_approval_key(self) -> str:
         """WebSocket 접속키 발급 (/oauth2/Approval).
 

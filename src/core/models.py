@@ -20,6 +20,7 @@ class CloseReason(str, Enum):
     EOD = "EOD"
     MANUAL = "MANUAL"
     RECONCILE_KIS_ZERO = "RECONCILE_KIS_ZERO"  # KIS 잔고 0 → ghost position 자동 정리
+    CLOSING_BET_MORNING = "CLOSING_BET_MORNING"  # 종가배팅 익일 오전 매도
 
 
 @dataclass
@@ -140,6 +141,7 @@ class SwingPosition:
     close_price: Optional[float] = None
     close_time: Optional[datetime] = None
     order_id: Optional[str] = None
+    strategy: str = "swing"              # "swing" or "closing_bet"
 
     @property
     def cost_basis(self) -> float:
@@ -166,6 +168,7 @@ class SwingPosition:
             "close_price": self.close_price,
             "close_time": self.close_time.isoformat() if self.close_time else None,
             "order_id": self.order_id,
+            "strategy": self.strategy,
         }
 
     @classmethod

@@ -29,6 +29,24 @@ def is_entry_allowed(dt: datetime | None = None) -> bool:
     return ENTRY_ALLOWED_FROM <= t <= time(15, 20)
 
 
+def is_closing_bet_entry(dt: datetime | None = None,
+                         from_hhmm: int = 1520, to_hhmm: int = 1525) -> bool:
+    """종가배팅 매수 허용 시간 (기본 15:20~15:25)."""
+    t = (dt or now_kst()).time()
+    return hhmm_to_time(from_hhmm) <= t <= hhmm_to_time(to_hhmm)
+
+
+def is_closing_bet_sell_time(dt: datetime | None = None,
+                              sell_before_hhmm: int = 1000) -> bool:
+    """종가배팅 익일 매도 시간 (09:05 ~ sell_before)."""
+    t = (dt or now_kst()).time()
+    return ENTRY_ALLOWED_FROM <= t <= hhmm_to_time(sell_before_hhmm)
+
+
+def hhmm_to_time(hhmm: int) -> time:
+    return time(hhmm // 100, hhmm % 100)
+
+
 def is_pre_market(dt: datetime | None = None) -> bool:
     """장 전 (08:00 ~ 09:00)."""
     t = (dt or now_kst()).time()
@@ -48,7 +66,3 @@ def minutes_to_close(dt: datetime | None = None) -> int:
         return 0
     close_dt = dt.replace(hour=15, minute=30, second=0, microsecond=0)
     return max(0, int((close_dt - dt).total_seconds() / 60))
-
-
-def hhmm_to_time(hhmm: int) -> time:
-    return time(hhmm // 100, hhmm % 100)

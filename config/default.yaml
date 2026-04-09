@@ -26,6 +26,18 @@ agents:
   max_tokens: 2000
   debate_rounds: 2
   num_agents: 3
+closing_bet:
+  enabled: false
+  screening_hhmm: 1450
+  entry_from_hhmm: 1520
+  entry_to_hhmm: 1525
+  sell_before_hhmm: 1000
+  target_profit_pct: 3.0
+  stop_loss_pct: 1.5
+  max_positions: 2
+  min_trade_amount_bn: 50
+  min_change_pct: 2.0
+  top_n: 30
 notification:
   enabled: false
 dart:

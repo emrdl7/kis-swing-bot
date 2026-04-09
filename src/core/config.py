@@ -53,6 +53,27 @@ class AgentsConfig(BaseModel):
     num_agents: int = 3
 
 
+class ClosingBetConfig(BaseModel):
+    """종가배팅 전략 설정."""
+    enabled: bool = False
+    screening_hhmm: int = 1450           # 스크리닝 시각
+    entry_from_hhmm: int = 1520          # 매수 시작
+    entry_to_hhmm: int = 1525            # 매수 마감
+    sell_before_hhmm: int = 1000         # 다음 날 이 시각 전 매도
+    target_profit_pct: float = 3.0       # 목표 수익률
+    stop_loss_pct: float = 1.5           # 손절 기준
+    max_positions: int = 2               # 종가배팅 최대 포지션
+    min_trade_amount_bn: int = 50        # 최소 거래대금 (억원)
+    min_change_pct: float = 2.0          # 당일 최소 등락률
+    top_n: int = 30                      # 순위 조회 상위 N개
+    score_weights: dict = {              # V스코어 가중치
+        "trade_amount": 0.30,
+        "change_pct": 0.25,
+        "volume_ratio": 0.25,
+        "ma_position": 0.20,
+    }
+
+
 class NotificationConfig(BaseModel):
     # 추후 텔레그램 연동 예정
     enabled: bool = False
@@ -93,6 +114,7 @@ class AppConfig(BaseSettings):
     exit: ExitConfig = Field(default_factory=ExitConfig)
     screening: ScreeningConfig = Field(default_factory=ScreeningConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
+    closing_bet: ClosingBetConfig = Field(default_factory=ClosingBetConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     dart: DartConfig = Field(default_factory=DartConfig)
     news: NewsConfig = Field(default_factory=NewsConfig)

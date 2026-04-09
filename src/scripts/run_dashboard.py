@@ -42,6 +42,7 @@ _REASON_KO = {
     "EOD": "장 마감",
     "MANUAL": "수동",
     "RECONCILE_KIS_ZERO": "KIS 잔고 0",
+    "CLOSING_BET_MORNING": "종가배팅 익일매도",
 }
 
 

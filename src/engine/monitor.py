@@ -2,11 +2,11 @@
 from __future__ import annotations
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.core.config import AppConfig
 from src.core import state_store
-from src.core.clock import is_regular_market, is_entry_allowed, now_kst
+from src.core.clock import is_regular_market, is_entry_allowed, is_closing_bet_entry, is_closing_bet_sell_time, now_kst
 from src.core.models import CloseReason, PositionState, SwingCandidate, SwingPosition
 from src.data.kis_client import KisClient
 from src.data.kis_ws_client import KisWebSocketClient
@@ -100,7 +100,37 @@ class MarketMonitor:
         active_positions = [p for p in positions if p.state != PositionState.CLOSED]
 
         changed = False
+
+        # ── 종가배팅 익일 오전 매도 ──
+        cb_cfg = self.cfg.closing_bet
+        if cb_cfg.enabled and is_closing_bet_sell_time(now, cb_cfg.sell_before_hhmm):
+            for pos in active_positions:
+                if pos.strategy != "closing_bet":
+                    continue
+                # 어제 진입한 종가배팅 포지션만 매도
+                if pos.entry_time.strftime("%Y-%m-%d") == today:
+                    continue  # 오늘 진입 = 아직 오버나이트 아님
+                try:
+                    price_data = self.kis.get_price(pos.symbol)
+                    px = float(price_data.get("stck_prpr", 0) or 0)
+                    if px <= 0:
+                        continue
+                    pnl_pct = pos.pnl_pct(px)
+                    # 목표 도달 또는 손절 또는 매도 시간 임박
+                    should_sell = (
+                        pnl_pct >= cb_cfg.target_profit_pct
+                        or pnl_pct <= -cb_cfg.stop_loss_pct
+                        or now.time() >= (datetime.combine(now.date(), datetime.min.time()) + timedelta(minutes=-5 + cb_cfg.sell_before_hhmm // 100 * 60 + cb_cfg.sell_before_hhmm % 100)).time()
+                    )
+                    if should_sell:
+                        self._close_position(pos, px, CloseReason.CLOSING_BET_MORNING)
+                        changed = True
+                except Exception as e:
+                    log.error("[CB %s] 익일매도 체크 오류: %s", pos.symbol, e)
+
         for pos in active_positions:
+            if pos.state == PositionState.CLOSED:
+                continue
             try:
                 price_data = self.kis.get_price(pos.symbol)
                 px = float(price_data.get("stck_prpr", 0) or 0)
@@ -191,8 +221,10 @@ class MarketMonitor:
         except Exception as e:
             log.error("잔고 조회/대사 실패: %s", e)
 
-        # 장 시작 5분 이내 매수 금지 (호가 갭 회피)
-        if not is_entry_allowed(now):
+        # 매수 허용 시간 확인 (스윙 또는 종가배팅 시간이 아니면 스킵)
+        swing_ok = is_entry_allowed(now)
+        cb_ok = cb_cfg.enabled and is_closing_bet_entry(now, cb_cfg.entry_from_hhmm, cb_cfg.entry_to_hhmm)
+        if not swing_ok and not cb_ok:
             return
 
         # 오늘 이미 거래된 종목 (진입 또는 당일 청산) → 재진입 금지
@@ -263,9 +295,17 @@ class MarketMonitor:
             px = cand_prices.get(cand.symbol, 0)
             if px <= 0:
                 continue
+            # 전략별 진입 시간 확인
+            is_cb = "closing_bet" in (cand.tags or [])
+            if is_cb and not is_closing_bet_entry(now, cb_cfg.entry_from_hhmm, cb_cfg.entry_to_hhmm):
+                continue
+            if not is_cb and not is_entry_allowed(now):
+                continue
             try:
                 new_pos = self.entry_exec.try_entry(cand, px, cash, active_now)
                 if new_pos:
+                    if is_cb:
+                        new_pos.strategy = "closing_bet"
                     positions.append(new_pos)
                     active_now.append(new_pos)
                     entered_symbols.add(cand.symbol)
