@@ -27,7 +27,7 @@ agents:
   debate_rounds: 2
   num_agents: 3
 closing_bet:
-  enabled: false
+  enabled: true
   screening_hhmm: 1450
   entry_from_hhmm: 1520
   entry_to_hhmm: 1525
