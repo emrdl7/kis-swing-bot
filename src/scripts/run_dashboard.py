@@ -90,6 +90,21 @@ def dashboard():
     ]
     active_cands = [c for c in candidates if not c.is_expired()]
 
+    # 전체 승률 계산 (RECONCILE 제외)
+    real_closed = [
+        p for p in positions
+        if p.state == PositionState.CLOSED
+        and p.close_reason not in (None, CloseReason.RECONCILE_KIS_ZERO)
+    ]
+    total_trades = len(real_closed)
+    wins = len([p for p in real_closed if p.close_price and p.close_price > p.avg_price])
+    win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+    total_realized = sum(
+        int((p.close_price - p.avg_price) * p.qty)
+        for p in real_closed if p.close_price
+    )
+    total_realized_color = _pnl_color(total_realized)
+
     # 현재가 일괄 조회
     symbols = list({p.symbol for p in active} | {c.symbol for c in active_cands})
     prices = _fetch_prices(symbols)
@@ -234,6 +249,11 @@ def dashboard():
     .trailing {{ background: #1a3a2a; color: #00c9a7; }}
     .watching {{ background: #2a2a1a; color: #f9ca24; }}
     .refresh {{ color: #555; font-size: 11px; margin-top: 16px; text-align: right; }}
+    .fab {{ position: fixed; bottom: 20px; right: 20px; width: 48px; height: 48px;
+            border-radius: 50%; background: #2a3a5c; color: #60b8ff; border: none;
+            font-size: 22px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+            display: flex; align-items: center; justify-content: center; z-index: 100; }}
+    .fab:active {{ background: #3a4a6c; }}
   </style>
 </head>
 <body>
@@ -277,6 +297,14 @@ def dashboard():
       <div class="card-label">총평가금액</div>
       <div class="card-value">{total_eval:,}원</div>
     </div>
+    <div class="card">
+      <div class="card-label">승률</div>
+      <div class="card-value" style="color:#60b8ff">{win_rate:.1f}% <small style="color:#888">({wins}/{total_trades})</small></div>
+    </div>
+    <div class="card">
+      <div class="card-label">총 실현손익</div>
+      <div class="card-value" style="color:{total_realized_color}">{total_realized:+,}원</div>
+    </div>
   </div>
 
   <section>
@@ -317,7 +345,8 @@ def dashboard():
     </div>
   </section>
 
-  <div class="refresh">auto-refresh 30s</div>
+  <button class="fab" onclick="location.reload()">&#x21bb;</button>
+  <div class="refresh">auto-refresh 10s</div>
 </body>
 </html>"""
     return html
