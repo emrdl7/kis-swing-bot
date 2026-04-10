@@ -74,7 +74,7 @@
     "state": "CLOSED",
     "peak_price": 3380.0,
     "trailing_stop_px": null,
-    "close_reason": "MANUAL_SELL",
+    "close_reason": "MANUAL",
     "close_price": 3410.0,
     "close_time": "2026-04-10T09:34:00",
     "order_id": null
@@ -90,7 +90,7 @@
     "state": "CLOSED",
     "peak_price": 108100.0,
     "trailing_stop_px": null,
-    "close_reason": "MANUAL_SELL",
+    "close_reason": "MANUAL",
     "close_price": 108500.0,
     "close_time": "2026-04-10T09:34:00",
     "order_id": null
