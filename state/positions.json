@@ -71,12 +71,12 @@
     "entry_time": "2026-04-08T10:40:22.278349",
     "target_price": 3550.0,
     "stop_price": 3200.0,
-    "state": "ENTERED",
+    "state": "CLOSED",
     "peak_price": 3380.0,
     "trailing_stop_px": null,
-    "close_reason": null,
-    "close_price": null,
-    "close_time": null,
+    "close_reason": "MANUAL_SELL",
+    "close_price": 3410.0,
+    "close_time": "2026-04-10T09:34:00",
     "order_id": null
   },
   {
@@ -87,12 +87,12 @@
     "entry_time": "2026-04-08T10:40:26.915606",
     "target_price": 112500.0,
     "stop_price": 101500.0,
-    "state": "ENTERED",
-    "peak_price": 106500.0,
+    "state": "CLOSED",
+    "peak_price": 108100.0,
     "trailing_stop_px": null,
-    "close_reason": null,
-    "close_price": null,
-    "close_time": null,
+    "close_reason": "MANUAL_SELL",
+    "close_price": 108500.0,
+    "close_time": "2026-04-10T09:34:00",
     "order_id": null
   }
 ]
