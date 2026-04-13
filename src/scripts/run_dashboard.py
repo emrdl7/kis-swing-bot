@@ -7,6 +7,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from datetime import datetime
+import threading
+import time as _time
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn
@@ -241,9 +243,28 @@ def _compute_snapshot() -> dict:
     }
 
 
+# 서버측 스냅샷 캐시 — 탭/요청 수와 무관하게 초당 1회만 실제 계산·REST 호출
+_SNAP_TTL_SEC = 1.0
+_snap_cache: dict = {"at": 0.0, "data": None}
+_snap_lock = threading.Lock()
+
+
 @app.get("/api/snapshot")
 def api_snapshot():
-    return _compute_snapshot()
+    now_ts = _time.monotonic()
+    cached = _snap_cache.get("data")
+    if cached and (now_ts - _snap_cache["at"]) < _SNAP_TTL_SEC:
+        return cached
+    with _snap_lock:
+        # 락 대기 중 다른 요청이 갱신했으면 그대로 반환
+        now_ts = _time.monotonic()
+        cached = _snap_cache.get("data")
+        if cached and (now_ts - _snap_cache["at"]) < _SNAP_TTL_SEC:
+            return cached
+        data = _compute_snapshot()
+        _snap_cache["data"] = data
+        _snap_cache["at"] = now_ts
+        return data
 
 
 @app.post("/api/rescreen")
