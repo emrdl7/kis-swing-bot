@@ -22,9 +22,23 @@ _kis = KisClient(_cfg.kis)
 
 
 def _fetch_prices(symbols: list[str]) -> dict[str, float]:
-    """종목코드 → 현재가 딕셔너리 반환. 실패 또는 0이면 제외."""
-    result = {}
+    """종목코드 → 현재가 딕셔너리. WS 실시간 캐시 우선, 미수신 종목만 REST 보강."""
+    from datetime import datetime, timedelta
+    result: dict[str, float] = {}
+    cache = state_store.load_realtime_prices() or {}
+    cutoff = datetime.now() - timedelta(seconds=10)
     for sym in symbols:
+        entry = cache.get(sym)
+        if entry:
+            try:
+                ts = datetime.fromisoformat(entry.get("ts", ""))
+                px = float(entry.get("price", 0) or 0)
+                if px > 0 and ts >= cutoff:
+                    result[sym] = px
+                    continue
+            except Exception:
+                pass
+        # WS 캐시에 없거나 오래됨 → REST 조회 (대시보드 첫 로드 대비)
         try:
             data = _kis.get_price(sym)
             px = float(data.get("stck_prpr", 0) or 0)
@@ -210,7 +224,7 @@ def dashboard():
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="refresh" content="10">
+  <meta http-equiv="refresh" content="3">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <title>KIS Swing Bot</title>
   <style>
@@ -258,7 +272,7 @@ def dashboard():
 </head>
 <body>
   <h1>KIS Swing Bot</h1>
-  <div class="meta">마지막 갱신: {now} &nbsp;·&nbsp; 30초 자동 새로고침</div>
+  <div class="meta">마지막 갱신: {now} &nbsp;·&nbsp; 3초 자동 새로고침 (실시간 시세 WS)</div>
 
   <div class="summary">
     <div class="card">
@@ -346,7 +360,7 @@ def dashboard():
   </section>
 
   <button class="fab" onclick="location.reload()">&#x21bb;</button>
-  <div class="refresh">auto-refresh 10s</div>
+  <div class="refresh">auto-refresh 3s</div>
 </body>
 </html>"""
     return html

@@ -25,7 +25,9 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 _TR_CCNL = "H0STCNI0"   # 국내주식 실시간 체결통보
+_TR_PRICE = "H0STCNT0"  # 국내주식 실시간 체결가
 _MAX_FILLS = 200          # 보관할 최대 체결 이벤트 수
+_MAX_PRICE_SUBS = 40      # KIS 동시 구독 제한(체결통보 1건 + 시세 ~40건)
 
 
 @dataclass
@@ -71,6 +73,10 @@ class KisWebSocketClient:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        # 실시간 시세 구독 상태 및 최신 체결가 캐시
+        self._ws = None                                     # 활성 websocket 커넥션 (재구독용)
+        self._price_subs: set[str] = set()                  # 구독 중인 종목코드
+        self._prices: dict[str, tuple[float, datetime]] = {}  # 종목코드 → (최신가, 수신시각)
 
     @staticmethod
     def _build_ws_url(base_url: str) -> str:
@@ -159,31 +165,99 @@ class KisWebSocketClient:
             ping_timeout=10,
         ) as ws:
             log.info("WebSocket 연결: %s", self._ws_url)
+            self._ws = ws
             await self._subscribe(ws)
+            # 재연결 시 이전 시세 구독 복원
+            for sym in list(self._price_subs):
+                await self._send_sub(ws, _TR_PRICE, sym, subscribe=True)
             self._connected.set()
 
-            async for message in ws:
-                if not self._running:
-                    break
-                self._handle_message(message)
+            try:
+                async for message in ws:
+                    if not self._running:
+                        break
+                    self._handle_message(message)
+            finally:
+                self._ws = None
 
-    async def _subscribe(self, ws) -> None:
+    async def _send_sub(self, ws, tr_id: str, tr_key: str, subscribe: bool = True) -> None:
         msg = {
             "header": {
                 "approval_key": self._approval_key,
                 "custtype": "P",
-                "tr_type": "1",
+                "tr_type": "1" if subscribe else "2",
                 "content-type": "utf-8",
             },
-            "body": {
-                "input": {
-                    "tr_id": _TR_CCNL,
-                    "tr_key": self._hts_id,
-                }
-            },
+            "body": {"input": {"tr_id": tr_id, "tr_key": tr_key}},
         }
         await ws.send(json.dumps(msg))
+
+    async def _subscribe(self, ws) -> None:
+        await self._send_sub(ws, _TR_CCNL, self._hts_id, subscribe=True)
         log.info("H0STCNI0 구독 요청 (hts_id=%s)", self._hts_id)
+
+    # ── 실시간 시세 구독 (H0STCNT0) ─────────────────────────────────────────
+
+    def subscribe_price(self, symbol: str) -> bool:
+        """종목 실시간 체결가 구독. 이미 구독 중이면 no-op."""
+        symbol = symbol.strip()
+        if not symbol:
+            return False
+        with self._lock:
+            if symbol in self._price_subs:
+                return True
+            if len(self._price_subs) >= _MAX_PRICE_SUBS:
+                log.warning("실시간 시세 구독 한도 초과(%d) — [%s] 스킵", _MAX_PRICE_SUBS, symbol)
+                return False
+            self._price_subs.add(symbol)
+        if self._ws and self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self._send_sub(self._ws, _TR_PRICE, symbol, True), self._loop,
+            )
+            log.info("[WS시세] 구독 추가: %s", symbol)
+        return True
+
+    def unsubscribe_price(self, symbol: str) -> None:
+        with self._lock:
+            if symbol not in self._price_subs:
+                return
+            self._price_subs.discard(symbol)
+            self._prices.pop(symbol, None)
+        if self._ws and self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self._send_sub(self._ws, _TR_PRICE, symbol, False), self._loop,
+            )
+            log.info("[WS시세] 구독 해제: %s", symbol)
+
+    def sync_price_subs(self, symbols: list[str]) -> None:
+        """지정 종목만 구독, 나머지는 해제 (state reconcile)."""
+        target = set(s.strip() for s in symbols if s.strip())
+        with self._lock:
+            current = set(self._price_subs)
+        for sym in current - target:
+            self.unsubscribe_price(sym)
+        for sym in target - current:
+            self.subscribe_price(sym)
+
+    def get_latest_price(self, symbol: str, max_age_sec: float = 10.0) -> Optional[float]:
+        """WS로 수신한 최신 체결가. 없거나 오래되면 None."""
+        with self._lock:
+            entry = self._prices.get(symbol)
+        if not entry:
+            return None
+        px, ts = entry
+        if (datetime.now() - ts).total_seconds() > max_age_sec:
+            return None
+        return px
+
+    def snapshot_prices(self) -> dict[str, dict]:
+        """전체 최신가 스냅샷 (대시보드/영속 저장용)."""
+        with self._lock:
+            items = list(self._prices.items())
+        return {
+            sym: {"price": px, "ts": ts.isoformat()}
+            for sym, (px, ts) in items
+        }
 
     # ── 메시지 파싱 ──────────────────────────────────────────────────────────
 
@@ -197,17 +271,40 @@ class KisWebSocketClient:
                 data = json.loads(raw)
                 header = data.get("header", {})
                 body = data.get("body", {})
-                rt_cd = header.get("tr_id", "")
+                tr_id = header.get("tr_id", "")
                 msg = body.get("msg1", "")
-                if rt_cd == _TR_CCNL:
-                    log.info("H0STCNI0 구독 응답: %s", msg or data)
+                if tr_id in (_TR_CCNL, _TR_PRICE):
+                    log.debug("%s 구독 응답: %s", tr_id, msg or data)
                 elif body.get("rt_cd") not in (None, "0", 0):
                     log.warning("WebSocket 오류 응답: %s", body)
                 return
 
-            # 실시간 데이터: "0|H0STCNI0|001|f0^f1^f2^..."
+            # 실시간 데이터: "0|<TR_ID>|<건수>|f0^f1^f2^..."
             parts = raw.split("|", 3)
-            if len(parts) < 4 or parts[1] != _TR_CCNL:
+            if len(parts) < 4:
+                return
+            tr_id = parts[1]
+
+            # ── H0STCNT0: 실시간 체결가 ─────────────────────────────────
+            if tr_id == _TR_PRICE:
+                # 다건일 수 있으므로 반복 파싱
+                payload = parts[3]
+                for rec in payload.split("|"):
+                    fields = rec.split("^")
+                    if len(fields) < 3:
+                        continue
+                    symbol = fields[0].strip()
+                    try:
+                        px = float(fields[2] or 0)
+                    except ValueError:
+                        continue
+                    if not symbol or px <= 0:
+                        continue
+                    with self._lock:
+                        self._prices[symbol] = (px, datetime.now())
+                return
+
+            if tr_id != _TR_CCNL:
                 return
 
             raw_data = parts[3]

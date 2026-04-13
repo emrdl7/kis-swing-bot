@@ -78,3 +78,11 @@ def load_daily_stats() -> dict:
 
 def save_daily_stats(data: dict) -> None:
     save("daily_stats", data)
+
+
+def load_realtime_prices() -> dict:
+    return load("realtime_prices", {})
+
+
+def save_realtime_prices(data: dict) -> None:
+    save("realtime_prices", data)

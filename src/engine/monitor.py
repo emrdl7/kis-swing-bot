@@ -79,6 +79,23 @@ class MarketMonitor:
 
     # ── 메인 틱 ────────────────────────────────────────────────────────────
 
+    def _get_px(self, symbol: str) -> float:
+        """WS 실시간 체결가 우선, 없거나 오래되면 REST로 fallback."""
+        if self.ws_client and self.ws_client.is_connected:
+            px = self.ws_client.get_latest_price(symbol, max_age_sec=5.0)
+            if px and px > 0:
+                return float(px)
+        pd = self.kis.get_price(symbol)
+        return float(pd.get("stck_prpr", 0) or 0)
+
+    def _sync_ws_subs(self, active_positions, candidates) -> None:
+        """보유 + 후보 종목으로 WS 시세 구독 동기화 + 캐시 파일 저장."""
+        if not (self.ws_client and self.ws_client.is_connected):
+            return
+        symbols = list({p.symbol for p in active_positions} | {c.symbol for c in candidates})
+        self.ws_client.sync_price_subs(symbols)
+        state_store.save_realtime_prices(self.ws_client.snapshot_prices())
+
     def _tick(self) -> None:
         now = now_kst()
         today = now.strftime("%Y-%m-%d")
@@ -98,6 +115,9 @@ class MarketMonitor:
         candidates = [SwingCandidate.from_dict(d) for d in state_store.load_candidates()]
         positions = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
         active_positions = [p for p in positions if p.state != PositionState.CLOSED]
+
+        # WS 시세 구독 동기화 + 스냅샷을 파일로 영속화 (대시보드가 참조)
+        self._sync_ws_subs(active_positions, candidates)
 
         changed = False
 
@@ -132,8 +152,7 @@ class MarketMonitor:
             if pos.state == PositionState.CLOSED:
                 continue
             try:
-                price_data = self.kis.get_price(pos.symbol)
-                px = float(price_data.get("stck_prpr", 0) or 0)
+                px = self._get_px(pos.symbol)
                 if px <= 0:
                     continue
 
@@ -257,8 +276,7 @@ class MarketMonitor:
                 dropped = True
                 continue
             try:
-                pd = self.kis.get_price(cand.symbol)
-                cpx = float(pd.get("stck_prpr", 0) or 0)
+                cpx = self._get_px(cand.symbol)
                 if cpx > 0 and cand.entry_high > 0:
                     gap = (cpx - cand.entry_high) / cand.entry_high
                     if gap > drop_pct:
