@@ -248,7 +248,7 @@ def _compute_snapshot() -> dict:
 
 
 # 서버측 스냅샷 캐시 — 탭/요청 수와 무관하게 초당 1회만 실제 계산·REST 호출
-_SNAP_TTL_SEC = 1.0
+_SNAP_TTL_SEC = 0.4
 _snap_cache: dict = {"at": 0.0, "data": None}
 _snap_lock = threading.Lock()
 
@@ -447,7 +447,7 @@ def dashboard():
   <div class="refresh">AJAX 1s polling · <span id="fetch-count">0</span> updates</div>
 
   <script>
-    const POLL_MS = 1000;
+    const POLL_MS = 500;
     let fetchCount = 0;
     let failCount = 0;
 

@@ -105,15 +105,12 @@ class MarketMonitor:
         """WS 가격 수신 콜백. 이벤트 드리븐 청산 판단 — 블로킹 금지."""
         if price <= 0:
             return
-        # 대시보드가 실시간 보도록 스냅샷 파일을 1초마다 갱신 (throttle)
-        now_ts = time.monotonic()
-        if now_ts - self._last_snapshot_save >= 1.0:
-            self._last_snapshot_save = now_ts
-            try:
-                if self.ws_client:
-                    state_store.save_realtime_prices(self.ws_client.snapshot_prices())
-            except Exception:
-                pass
+        # 모든 WS 체결 이벤트를 즉시 파일에 반영 (로컬 I/O라 비용 미미, 진짜 실시간)
+        try:
+            if self.ws_client:
+                state_store.save_realtime_prices(self.ws_client.snapshot_prices())
+        except Exception:
+            pass
         # 진행 중이면 즉시 반환
         with self._closing_lock:
             if symbol in self._closing_symbols:
