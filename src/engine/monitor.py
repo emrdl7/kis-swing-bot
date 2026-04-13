@@ -176,6 +176,11 @@ class MarketMonitor:
                 if int(item.get("hldg_qty", 0) or 0) > 0
             }
             for pos in active_positions:
+                # 이번 틱에서 이미 CLOSED 처리된 포지션은 reconcile 대상에서 제외
+                # (정상 매도 체결 직후 같은 틱 reconcile이 RECONCILE_KIS_ZERO로 덮어쓰는 것 방지)
+                if pos.state == PositionState.CLOSED:
+                    self._reconcile_miss.pop(pos.symbol, None)
+                    continue
                 kis = kis_holdings.get(pos.symbol)
                 if kis is None:
                     miss = self._reconcile_miss.get(pos.symbol, 0) + 1
@@ -220,6 +225,11 @@ class MarketMonitor:
                     )
         except Exception as e:
             log.error("잔고 조회/대사 실패: %s", e)
+
+        # 청산/대사 단계에서 변경된 내용은 엔트리 단계 진입 전에 즉시 영속화
+        # (엔트리 시간 전 early-return 경로에서 손절 CLOSED 상태가 소실되는 버그 방지)
+        if changed:
+            state_store.save_positions([p.to_dict() for p in positions])
 
         # 매수 허용 시간 확인 (스윙 또는 종가배팅 시간이 아니면 스킵)
         swing_ok = is_entry_allowed(now)

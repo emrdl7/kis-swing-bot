@@ -13,7 +13,8 @@
     "close_reason": "STOP_LOSS",
     "close_price": 194200.0,
     "close_time": "2026-04-07T10:39:06.585733",
-    "order_id": null
+    "order_id": null,
+    "strategy": "swing"
   },
   {
     "symbol": "263860",
@@ -29,7 +30,8 @@
     "close_reason": "STOP_LOSS",
     "close_price": 13030.0,
     "close_time": "2026-04-07T12:58:12.779254",
-    "order_id": null
+    "order_id": null,
+    "strategy": "swing"
   },
   {
     "symbol": "068270",
@@ -45,7 +47,8 @@
     "close_reason": "STOP_LOSS",
     "close_price": 191900.0,
     "close_time": "2026-04-07T13:15:58.298742",
-    "order_id": null
+    "order_id": null,
+    "strategy": "swing"
   },
   {
     "symbol": "298380",
@@ -55,13 +58,14 @@
     "entry_time": "2026-04-08T10:20:36.899811",
     "target_price": 165000.0,
     "stop_price": 148700.0,
-    "state": "ENTERED",
+    "state": "CLOSED",
     "peak_price": 162800.0,
     "trailing_stop_px": null,
-    "close_reason": null,
-    "close_price": null,
-    "close_time": null,
-    "order_id": null
+    "close_reason": "STOP_LOSS",
+    "close_price": 153300.0,
+    "close_time": "2026-04-13T09:01:34",
+    "order_id": null,
+    "strategy": "swing"
   },
   {
     "symbol": "315640",
@@ -77,7 +81,8 @@
     "close_reason": "MANUAL",
     "close_price": 3410.0,
     "close_time": "2026-04-10T09:34:00",
-    "order_id": null
+    "order_id": null,
+    "strategy": "swing"
   },
   {
     "symbol": "000120",
@@ -93,6 +98,75 @@
     "close_reason": "MANUAL",
     "close_price": 108500.0,
     "close_time": "2026-04-10T09:34:00",
-    "order_id": null
+    "order_id": null,
+    "strategy": "swing"
+  },
+  {
+    "symbol": "096530",
+    "name": "씨젠",
+    "qty": 14,
+    "avg_price": 23250.0,
+    "entry_time": "2026-04-13T09:05:27.140894",
+    "target_price": 25250.0,
+    "stop_price": 23150.0,
+    "state": "ENTERED",
+    "peak_price": 23250.0,
+    "trailing_stop_px": null,
+    "close_reason": null,
+    "close_price": null,
+    "close_time": null,
+    "order_id": null,
+    "strategy": "swing"
+  },
+  {
+    "symbol": "017960",
+    "name": "한국카본",
+    "qty": 6,
+    "avg_price": 48050.0,
+    "entry_time": "2026-04-13T09:05:34.113757",
+    "target_price": 49350.0,
+    "stop_price": 45090.0,
+    "state": "CLOSED",
+    "peak_price": 49350.0,
+    "trailing_stop_px": 48609.75,
+    "close_reason": "TAKE_PROFIT",
+    "close_price": 49250.0,
+    "close_time": "2026-04-13T09:14:09.072999",
+    "order_id": null,
+    "strategy": "swing"
+  },
+  {
+    "symbol": "028670",
+    "name": "팬오션",
+    "qty": 22,
+    "avg_price": 5450.0,
+    "entry_time": "2026-04-13T09:06:26.868449",
+    "target_price": 5680.0,
+    "stop_price": 5150.0,
+    "state": "ENTERED",
+    "peak_price": 5450.0,
+    "trailing_stop_px": null,
+    "close_reason": null,
+    "close_price": null,
+    "close_time": null,
+    "order_id": null,
+    "strategy": "swing"
+  },
+  {
+    "symbol": "065450",
+    "name": "빅텍",
+    "qty": 33,
+    "avg_price": 5540.0,
+    "entry_time": "2026-04-13T09:14:19.521528",
+    "target_price": 5730.0,
+    "stop_price": 5200.0,
+    "state": "ENTERED",
+    "peak_price": 5570.0,
+    "trailing_stop_px": null,
+    "close_reason": null,
+    "close_price": null,
+    "close_time": null,
+    "order_id": null,
+    "strategy": "swing"
   }
 ]
