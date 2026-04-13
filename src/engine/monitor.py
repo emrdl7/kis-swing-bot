@@ -13,6 +13,7 @@ from src.data.kis_ws_client import KisWebSocketClient
 from src.engine.entry_executor import EntryExecutor
 from src.engine.position_manager import PositionManager
 from src.engine.risk_manager import RiskManager
+from src.engine import rescreen_trigger
 from src.notification import apple_notes
 
 log = logging.getLogger(__name__)
@@ -118,6 +119,13 @@ class MarketMonitor:
 
         # WS 시세 구독 동기화 + 스냅샷을 파일로 영속화 (대시보드가 참조)
         self._sync_ws_subs(active_positions, candidates)
+
+        # 후보 소진 시 자동 재토론 (쿨다운·한도 가드)
+        active_cands = [c for c in candidates if not c.is_expired(now)]
+        ok, reason = rescreen_trigger.should_rescreen(now, len(active_cands), manual=False)
+        if ok:
+            log.info("[재토론] 자동 트리거 — 활성 후보 %d개", len(active_cands))
+            rescreen_trigger.trigger_rescreen(now, manual=False)
 
         changed = False
 

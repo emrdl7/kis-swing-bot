@@ -8,13 +8,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from datetime import datetime
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn
 
 from src.core.config import load_config
 from src.core import state_store
 from src.core.models import PositionState, SwingPosition, SwingCandidate
 from src.data.kis_client import KisClient
+from src.engine import rescreen_trigger
 
 app = FastAPI()
 _cfg = load_config()
@@ -245,6 +246,18 @@ def api_snapshot():
     return _compute_snapshot()
 
 
+@app.post("/api/rescreen")
+def api_rescreen():
+    now = datetime.now()
+    cands = state_store.load_candidates() or []
+    active = [c for c in cands if not SwingCandidate.from_dict(c).is_expired(now)]
+    ok, reason = rescreen_trigger.should_rescreen(now, len(active), manual=True)
+    if not ok:
+        return JSONResponse({"ok": False, "reason": reason}, status_code=409)
+    result = rescreen_trigger.trigger_rescreen(now, manual=True)
+    return result
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     # 초기 로드 시 한 번만 스냅샷 계산 (이후 JS가 주기 갱신)
@@ -312,8 +325,13 @@ def dashboard():
   </style>
 </head>
 <body>
-  <h1>KIS Swing Bot</h1>
-  <div class="meta">마지막 갱신: <span id="updated-at">{now}</span> &nbsp;·&nbsp; <span id="live-status" style="color:#00c9a7">● LIVE</span> (AJAX 1초 갱신)</div>
+  <h1>KIS Swing Bot
+    <button id="rescreen-btn" onclick="triggerRescreen()"
+      style="float:right;background:#2a3a5c;color:#60b8ff;border:none;padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer">
+      🔍 지금 재토론
+    </button>
+  </h1>
+  <div class="meta">마지막 갱신: <span id="updated-at">{now}</span> &nbsp;·&nbsp; <span id="live-status" style="color:#00c9a7">● LIVE</span> (AJAX 1초 갱신) &nbsp;·&nbsp; <span id="rescreen-msg" style="color:#888"></span></div>
 
   <div class="summary">
     <div class="card">
@@ -456,6 +474,30 @@ def dashboard():
       }}
     }}
     setInterval(refreshNow, POLL_MS);
+
+    async function triggerRescreen() {{
+      const btn = document.getElementById('rescreen-btn');
+      const msg = document.getElementById('rescreen-msg');
+      if (!confirm('지금 재토론을 실행하시겠어요? LLM 비용이 발생합니다.')) return;
+      btn.disabled = true; btn.textContent = '⏳ 실행 중...';
+      msg.textContent = '';
+      try {{
+        const res = await fetch('/api/rescreen', {{method: 'POST'}});
+        const data = await res.json();
+        if (res.ok && data.ok) {{
+          msg.textContent = '✓ 재토론 시작 (오늘 ' + data.count_today + '회째, pid=' + data.pid + ')';
+          msg.style.color = '#00c9a7';
+        }} else {{
+          msg.textContent = '✗ 실행 불가: ' + (data.reason || data.error || 'unknown');
+          msg.style.color = '#ff6b6b';
+        }}
+      }} catch (e) {{
+        msg.textContent = '✗ 네트워크 오류: ' + e.message;
+        msg.style.color = '#ff6b6b';
+      }} finally {{
+        setTimeout(() => {{ btn.disabled = false; btn.textContent = '🔍 지금 재토론'; }}, 3000);
+      }}
+    }}
   </script>
 </body>
 </html>"""
