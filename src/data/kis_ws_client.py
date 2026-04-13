@@ -285,9 +285,12 @@ class KisWebSocketClient:
                 tr_id = header.get("tr_id", "")
                 msg = body.get("msg1", "")
                 if tr_id in (_TR_CCNL, _TR_PRICE, _TR_NXT_PRICE):
-                    log.debug("%s 구독 응답: %s", tr_id, msg or data)
+                    log.info("%s 구독 응답: %s", tr_id, msg or data)
                 elif body.get("rt_cd") not in (None, "0", 0):
                     log.warning("WebSocket 오류 응답: %s", body)
+                else:
+                    # 알 수 없는 JSON 메시지 — 진단용
+                    log.info("WS JSON msg: %s", data)
                 return
 
             # 실시간 데이터: "0|<TR_ID>|<건수>|f0^f1^f2^..."
