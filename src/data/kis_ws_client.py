@@ -25,7 +25,8 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 _TR_CCNL = "H0STCNI0"   # 국내주식 실시간 체결통보
-_TR_PRICE = "H0STCNT0"  # 국내주식 실시간 체결가
+_TR_PRICE = "H0STCNT0"  # KRX 정규장 실시간 체결가
+_TR_NXT_PRICE = "H0NXCNT0"  # NXT 실시간 체결가 (프리장 08:00~09:00, 애프터마켓)
 _MAX_FILLS = 200          # 보관할 최대 체결 이벤트 수
 _MAX_PRICE_SUBS = 40      # KIS 동시 구독 제한(체결통보 1건 + 시세 ~40건)
 
@@ -168,9 +169,10 @@ class KisWebSocketClient:
             log.info("WebSocket 연결: %s", self._ws_url)
             self._ws = ws
             await self._subscribe(ws)
-            # 재연결 시 이전 시세 구독 복원
+            # 재연결 시 이전 시세 구독 복원 (KRX + NXT)
             for sym in list(self._price_subs):
                 await self._send_sub(ws, _TR_PRICE, sym, subscribe=True)
+                await self._send_sub(ws, _TR_NXT_PRICE, sym, subscribe=True)
             self._connected.set()
 
             try:
@@ -200,7 +202,7 @@ class KisWebSocketClient:
     # ── 실시간 시세 구독 (H0STCNT0) ─────────────────────────────────────────
 
     def subscribe_price(self, symbol: str) -> bool:
-        """종목 실시간 체결가 구독. 이미 구독 중이면 no-op."""
+        """종목 실시간 체결가 구독 (KRX + NXT 병행). 이미 구독 중이면 no-op."""
         symbol = symbol.strip()
         if not symbol:
             return False
@@ -212,10 +214,11 @@ class KisWebSocketClient:
                 return False
             self._price_subs.add(symbol)
         if self._ws and self._loop:
-            asyncio.run_coroutine_threadsafe(
-                self._send_sub(self._ws, _TR_PRICE, symbol, True), self._loop,
-            )
-            log.info("[WS시세] 구독 추가: %s", symbol)
+            for tr in (_TR_PRICE, _TR_NXT_PRICE):
+                asyncio.run_coroutine_threadsafe(
+                    self._send_sub(self._ws, tr, symbol, True), self._loop,
+                )
+            log.info("[WS시세] 구독 추가: %s (KRX+NXT)", symbol)
         return True
 
     def unsubscribe_price(self, symbol: str) -> None:
@@ -225,10 +228,11 @@ class KisWebSocketClient:
             self._price_subs.discard(symbol)
             self._prices.pop(symbol, None)
         if self._ws and self._loop:
-            asyncio.run_coroutine_threadsafe(
-                self._send_sub(self._ws, _TR_PRICE, symbol, False), self._loop,
-            )
-            log.info("[WS시세] 구독 해제: %s", symbol)
+            for tr in (_TR_PRICE, _TR_NXT_PRICE):
+                asyncio.run_coroutine_threadsafe(
+                    self._send_sub(self._ws, tr, symbol, False), self._loop,
+                )
+            log.info("[WS시세] 구독 해제: %s (KRX+NXT)", symbol)
 
     def sync_price_subs(self, symbols: list[str]) -> None:
         """지정 종목만 구독, 나머지는 해제 (state reconcile)."""
@@ -280,7 +284,7 @@ class KisWebSocketClient:
                 body = data.get("body", {})
                 tr_id = header.get("tr_id", "")
                 msg = body.get("msg1", "")
-                if tr_id in (_TR_CCNL, _TR_PRICE):
+                if tr_id in (_TR_CCNL, _TR_PRICE, _TR_NXT_PRICE):
                     log.debug("%s 구독 응답: %s", tr_id, msg or data)
                 elif body.get("rt_cd") not in (None, "0", 0):
                     log.warning("WebSocket 오류 응답: %s", body)
@@ -292,8 +296,8 @@ class KisWebSocketClient:
                 return
             tr_id = parts[1]
 
-            # ── H0STCNT0: 실시간 체결가 ─────────────────────────────────
-            if tr_id == _TR_PRICE:
+            # ── H0STCNT0/H0NXCNT0: 실시간 체결가 (KRX / NXT) ───────────
+            if tr_id in (_TR_PRICE, _TR_NXT_PRICE):
                 # 다건일 수 있으므로 반복 파싱
                 payload = parts[3]
                 for rec in payload.split("|"):

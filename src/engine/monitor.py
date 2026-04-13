@@ -215,7 +215,16 @@ class MarketMonitor:
             cb_cfg.enabled and cb_cfg.pre_market_sell_enabled
             and is_pre_market_sell_window(now, cb_cfg.pre_market_from_hhmm, cb_cfg.pre_market_to_hhmm)
         )
+        # 장·프리장 외 시간에도 WS 구독 동기화 + 가격 스냅샷 저장은 수행
+        # (대시보드가 NXT 프리장/시간외 가격을 보려면 캐시가 살아있어야 함)
         if not is_regular_market(now) and not in_pre_market_sell:
+            try:
+                positions = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
+                candidates = [SwingCandidate.from_dict(d) for d in state_store.load_candidates()]
+                active_positions = [p for p in positions if p.state != PositionState.CLOSED]
+                self._sync_ws_subs(active_positions, candidates)
+            except Exception as e:
+                log.debug("장외 WS 동기화 실패: %s", e)
             return
 
         if self.risk_mgr.is_daily_halt(self._daily_pnl):
