@@ -25,11 +25,15 @@ _kis = KisClient(_cfg.kis)
 
 
 def _fetch_prices(symbols: list[str]) -> dict[str, float]:
-    """종목코드 → 현재가 딕셔너리. WS 실시간 캐시 우선, 미수신 종목만 REST 보강."""
+    """종목코드 → 현재가 딕셔너리. WS 실시간 캐시 우선, 미수신 종목만 REST 보강.
+
+    캐시 파일은 monitor가 30초 주기로 저장하므로 신선도 기준을 60초로 잡아
+    평시 REST fallback이 과하게 발생하지 않도록 한다.
+    """
     from datetime import datetime, timedelta
     result: dict[str, float] = {}
     cache = state_store.load_realtime_prices() or {}
-    cutoff = datetime.now() - timedelta(seconds=10)
+    cutoff = datetime.now() - timedelta(seconds=60)
     for sym in symbols:
         entry = cache.get(sym)
         if entry:
@@ -41,7 +45,7 @@ def _fetch_prices(symbols: list[str]) -> dict[str, float]:
                     continue
             except Exception:
                 pass
-        # WS 캐시에 없거나 오래됨 → REST 조회 (대시보드 첫 로드 대비)
+        # WS 캐시에 없거나 오래됨 → REST 조회 (첫 로드 및 NXT 비거래 종목 대비)
         try:
             data = _kis.get_price(sym)
             px = float(data.get("stck_prpr", 0) or 0)

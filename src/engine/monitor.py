@@ -64,16 +64,16 @@ class MarketMonitor:
         self._last_date: str = today_str if stats.get("date") == today_str else ""
 
         # ── 이벤트 드리븐 청산 ──
-        # WS 스레드에서 가격을 수신하면 _on_price_update 콜백이 익절/손절 판단만 빠르게 수행
-        # 조건 성립 시 exit_queue에 밀어넣고, 별도 worker 스레드가 순차적으로 매도 주문 실행
         self._exit_queue: queue.Queue = queue.Queue()
-        self._closing_symbols: set[str] = set()         # 진행 중인 매도 종목 (중복 방지)
+        self._closing_symbols: set[str] = set()
         self._closing_lock = threading.Lock()
         self._worker_running = True
         self._exit_worker_thread = threading.Thread(
             target=self._exit_worker_loop, daemon=True, name="exit-worker",
         )
         self._exit_worker_thread.start()
+        # WS 스냅샷 파일 저장 throttle (대시보드용 실시간 반영)
+        self._last_snapshot_save: float = 0.0
         if self.ws_client:
             self.ws_client.set_price_callback(self._on_price_update)
             log.info("이벤트 드리븐 청산 활성화 (WS 콜백 등록)")
@@ -105,6 +105,15 @@ class MarketMonitor:
         """WS 가격 수신 콜백. 이벤트 드리븐 청산 판단 — 블로킹 금지."""
         if price <= 0:
             return
+        # 대시보드가 실시간 보도록 스냅샷 파일을 1초마다 갱신 (throttle)
+        now_ts = time.monotonic()
+        if now_ts - self._last_snapshot_save >= 1.0:
+            self._last_snapshot_save = now_ts
+            try:
+                if self.ws_client:
+                    state_store.save_realtime_prices(self.ws_client.snapshot_prices())
+            except Exception:
+                pass
         # 진행 중이면 즉시 반환
         with self._closing_lock:
             if symbol in self._closing_symbols:
