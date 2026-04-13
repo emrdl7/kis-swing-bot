@@ -298,6 +298,10 @@ class KisWebSocketClient:
             if len(parts) < 4:
                 return
             tr_id = parts[1]
+            # NXT 수신 진단용 (최초 몇 건만 로그)
+            if tr_id == _TR_NXT_PRICE and not getattr(self, "_nxt_sample_logged", False):
+                log.info("[WS진단] NXT 첫 수신 tr_id=%s len=%d sample=%r", tr_id, len(raw), raw[:200])
+                self._nxt_sample_logged = True
 
             # ── H0STCNT0/H0NXCNT0: 실시간 체결가 (KRX / NXT) ───────────
             if tr_id in (_TR_PRICE, _TR_NXT_PRICE):
