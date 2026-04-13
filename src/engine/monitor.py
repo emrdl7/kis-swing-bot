@@ -338,10 +338,13 @@ class MarketMonitor:
             if not is_cb and not is_entry_allowed(now):
                 continue
             try:
-                new_pos = self.entry_exec.try_entry(cand, px, cash, active_now)
+                strat = "closing_bet" if is_cb else "swing"
+                strat_max = cb_cfg.max_positions if is_cb else self.cfg.trading.max_positions
+                new_pos = self.entry_exec.try_entry(
+                    cand, px, cash, active_now,
+                    strategy=strat, strategy_max=strat_max,
+                )
                 if new_pos:
-                    if is_cb:
-                        new_pos.strategy = "closing_bet"
                     positions.append(new_pos)
                     active_now.append(new_pos)
                     entered_symbols.add(cand.symbol)

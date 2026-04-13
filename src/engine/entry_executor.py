@@ -28,19 +28,18 @@ class EntryExecutor:
         self.dry_run = dry_run
         self.ws_client = ws_client
 
-    def _dynamic_size_pct(self, cash: int) -> float:
+    def _dynamic_size_pct(self, cash: int, max_pos: Optional[int] = None) -> float:
         """자본금 규모에 따라 종목당 투자 비중을 동적 조정.
 
         소액일수록 비중을 높여 1주라도 매수 가능하게 하고,
         자본금이 커지면 설정값(position_size_pct)으로 수렴.
         """
         base = self.trading.position_size_pct
-        max_pos = self.trading.max_positions
+        if max_pos is None:
+            max_pos = self.trading.max_positions
         if cash <= 0:
             return base
-        # 종목당 최소 투자금: 1/max_positions (균등 배분)
-        equal_pct = 1.0 / max_pos
-        # 소액(300만원 이하)이면 균등 배분, 이상이면 설정값 사용
+        equal_pct = 1.0 / max(1, max_pos)
         if cash < 3_000_000:
             return equal_pct
         return base
@@ -51,20 +50,34 @@ class EntryExecutor:
         current_price: float,
         cash: int,
         open_positions: list[SwingPosition],
+        strategy: str = "swing",
+        strategy_max: Optional[int] = None,
     ) -> Optional[SwingPosition]:
         """후보 종목 진입 조건 확인 후 매수 실행.
+
+        Args:
+            strategy: "swing" | "closing_bet" — 포지션에 기록될 전략명
+            strategy_max: 해당 전략의 최대 동시 보유 수. None 이면 trading.max_positions 사용
 
         Returns:
             SwingPosition if entered, None otherwise.
         """
-        # 이미 보유 중이면 스킵
+        # 이미 보유 중이면 스킵 (전략 무관 — 동일 종목 중복 방지)
         held_symbols = {p.symbol for p in open_positions if p.state not in (PositionState.CLOSED,)}
         if candidate.symbol in held_symbols:
             return None
 
-        # 최대 포지션 수 확인
-        active_count = len([p for p in open_positions if p.state != PositionState.CLOSED])
-        if active_count >= self.trading.max_positions:
+        # 전략별 슬롯 분리: 같은 strategy 포지션만 카운트해서 제한 적용
+        limit = strategy_max if strategy_max is not None else self.trading.max_positions
+        same_strategy = [
+            p for p in open_positions
+            if p.state != PositionState.CLOSED and (p.strategy or "swing") == strategy
+        ]
+        if len(same_strategy) >= limit:
+            log.debug(
+                "[%s] 진입 차단: %s 슬롯 가득 참 (%d/%d)",
+                candidate.symbol, strategy, len(same_strategy), limit,
+            )
             return None
 
         # 가격이 진입 범위에 있는지 확인
@@ -74,8 +87,8 @@ class EntryExecutor:
         if not (low <= current_price <= high):
             return None
 
-        # 투자금 계산 (자본금 규모에 따라 비중 동적 조정)
-        pct = self._dynamic_size_pct(cash)
+        # 투자금 계산 (자본금 규모에 따라 비중 동적 조정, 전략별 슬롯 수 고려)
+        pct = self._dynamic_size_pct(cash, max_pos=limit)
         invest_amount = int(cash * pct)
         if invest_amount < int(current_price):
             log.warning("[%s] 투자 가능 금액(%s원) < 주가(%s원), 매수 불가",
@@ -200,5 +213,6 @@ class EntryExecutor:
             stop_price=candidate.stop_price,
             state=PositionState.ENTERED,
             peak_price=actual_price,
+            strategy=strategy,
         )
         return pos
