@@ -86,8 +86,8 @@ def _in_zone_badge(price: float, low: float, high: float) -> str:
     return f'<span style="color:#f9ca24">▲ {gap_pct:.1f}% 위</span>'
 
 
-@app.get("/", response_class=HTMLResponse)
-def dashboard():
+def _compute_snapshot() -> dict:
+    """대시보드 렌더링에 필요한 모든 동적 데이터 + HTML 프래그먼트 생성."""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -220,11 +220,52 @@ def dashboard():
     if not closed_rows:
         closed_rows = '<tr><td colspan="6" style="text-align:center;color:#666">오늘 청산 없음</td></tr>'
 
+    return {
+        "updated_at": now,
+        "summary": {
+            "daily_pnl": daily_pnl, "pnl_color": pnl_color,
+            "unrealized_pnl": unrealized_pnl, "unr_color": unr_color,
+            "active_count": len(active),
+            "closed_count": len(closed_today),
+            "cand_count": len(active_cands),
+            "account_cash": account_cash, "order_cash": order_cash,
+            "eval_amt": eval_amt, "total_eval": total_eval,
+            "win_rate": win_rate, "wins": wins, "total_trades": total_trades,
+            "total_realized": total_realized,
+            "total_realized_color": total_realized_color,
+        },
+        "positions_html": pos_rows,
+        "candidates_html": cand_rows,
+        "closed_html": closed_rows,
+    }
+
+
+@app.get("/api/snapshot")
+def api_snapshot():
+    return _compute_snapshot()
+
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard():
+    # 초기 로드 시 한 번만 스냅샷 계산 (이후 JS가 주기 갱신)
+    snap = _compute_snapshot()
+    now = snap["updated_at"]
+    s = snap["summary"]
+    daily_pnl = s["daily_pnl"]; pnl_color = s["pnl_color"]
+    unrealized_pnl = s["unrealized_pnl"]; unr_color = s["unr_color"]
+    account_cash = s["account_cash"]; order_cash = s["order_cash"]
+    eval_amt = s["eval_amt"]; total_eval = s["total_eval"]
+    win_rate = s["win_rate"]; wins = s["wins"]; total_trades = s["total_trades"]
+    total_realized = s["total_realized"]; total_realized_color = s["total_realized_color"]
+    active_len = s["active_count"]; closed_len = s["closed_count"]; cand_len = s["cand_count"]
+    pos_rows = snap["positions_html"]
+    cand_rows = snap["candidates_html"]
+    closed_rows = snap["closed_html"]
+
     html = f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="refresh" content="3">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <title>KIS Swing Bot</title>
   <style>
@@ -272,52 +313,52 @@ def dashboard():
 </head>
 <body>
   <h1>KIS Swing Bot</h1>
-  <div class="meta">마지막 갱신: {now} &nbsp;·&nbsp; 3초 자동 새로고침 (실시간 시세 WS)</div>
+  <div class="meta">마지막 갱신: <span id="updated-at">{now}</span> &nbsp;·&nbsp; <span id="live-status" style="color:#00c9a7">● LIVE</span> (AJAX 1초 갱신)</div>
 
   <div class="summary">
     <div class="card">
       <div class="card-label">오늘 실현손익</div>
-      <div class="card-value" style="color:{pnl_color}">{daily_pnl:+,}원</div>
+      <div class="card-value" id="daily-pnl" style="color:{pnl_color}">{daily_pnl:+,}원</div>
     </div>
     <div class="card">
       <div class="card-label">미실현손익</div>
-      <div class="card-value" style="color:{unr_color}">{unrealized_pnl:+,}원</div>
+      <div class="card-value" id="unrealized-pnl" style="color:{unr_color}">{unrealized_pnl:+,}원</div>
     </div>
     <div class="card">
       <div class="card-label">보유 포지션</div>
-      <div class="card-value">{len(active)}종목</div>
+      <div class="card-value" id="active-count">{active_len}종목</div>
     </div>
     <div class="card">
       <div class="card-label">오늘 청산</div>
-      <div class="card-value">{len(closed_today)}건</div>
+      <div class="card-value" id="closed-count">{closed_len}건</div>
     </div>
     <div class="card">
       <div class="card-label">감시 후보</div>
-      <div class="card-value">{len(active_cands)}종목</div>
+      <div class="card-value" id="cand-count">{cand_len}종목</div>
     </div>
     <div class="card">
       <div class="card-label">예수금 총액</div>
-      <div class="card-value">{account_cash:,}원</div>
+      <div class="card-value" id="account-cash">{account_cash:,}원</div>
     </div>
     <div class="card">
       <div class="card-label">주문가능액</div>
-      <div class="card-value">{order_cash:,}원</div>
+      <div class="card-value" id="order-cash">{order_cash:,}원</div>
     </div>
     <div class="card">
       <div class="card-label">유가평가액</div>
-      <div class="card-value">{eval_amt:,}원</div>
+      <div class="card-value" id="eval-amt">{eval_amt:,}원</div>
     </div>
     <div class="card">
       <div class="card-label">총평가금액</div>
-      <div class="card-value">{total_eval:,}원</div>
+      <div class="card-value" id="total-eval">{total_eval:,}원</div>
     </div>
     <div class="card">
       <div class="card-label">승률</div>
-      <div class="card-value" style="color:#60b8ff">{win_rate:.1f}% <small style="color:#888">({wins}/{total_trades})</small></div>
+      <div class="card-value" id="win-rate" style="color:#60b8ff">{win_rate:.1f}% <small style="color:#888">({wins}/{total_trades})</small></div>
     </div>
     <div class="card">
       <div class="card-label">총 실현손익</div>
-      <div class="card-value" style="color:{total_realized_color}">{total_realized:+,}원</div>
+      <div class="card-value" id="total-realized" style="color:{total_realized_color}">{total_realized:+,}원</div>
     </div>
   </div>
 
@@ -329,7 +370,7 @@ def dashboard():
         <th>종목</th><th>수량</th><th>매수가</th><th>현재가</th><th>수익률 / 손익</th><th>상태</th>
         <th class="hide-mobile">목표가</th><th class="hide-mobile">손절가</th><th class="hide-mobile">트레일링</th>
       </tr></thead>
-      <tbody>{pos_rows}</tbody>
+      <tbody id="positions-tbody">{pos_rows}</tbody>
     </table>
     </div>
   </section>
@@ -342,7 +383,7 @@ def dashboard():
         <th>종목</th><th>현재가</th><th>진입구간</th><th>신뢰도</th><th>진입여부</th>
         <th class="hide-mobile">목표가</th><th class="hide-mobile">손절가</th><th class="hide-mobile">만료</th>
       </tr></thead>
-      <tbody>{cand_rows}</tbody>
+      <tbody id="candidates-tbody">{cand_rows}</tbody>
     </table>
     </div>
   </section>
@@ -354,13 +395,68 @@ def dashboard():
       <thead><tr>
         <th>종목</th><th>매수가</th><th>매도가</th><th>수익률</th><th>손익</th><th>사유</th>
       </tr></thead>
-      <tbody>{closed_rows}</tbody>
+      <tbody id="closed-tbody">{closed_rows}</tbody>
     </table>
     </div>
   </section>
 
-  <button class="fab" onclick="location.reload()">&#x21bb;</button>
-  <div class="refresh">auto-refresh 3s</div>
+  <button class="fab" onclick="refreshNow()">&#x21bb;</button>
+  <div class="refresh">AJAX 1s polling · <span id="fetch-count">0</span> updates</div>
+
+  <script>
+    const POLL_MS = 1000;
+    let fetchCount = 0;
+    let failCount = 0;
+
+    function setText(id, text) {{
+      const el = document.getElementById(id);
+      if (el && el.textContent !== text) el.textContent = text;
+    }}
+    function setHTML(id, html) {{
+      const el = document.getElementById(id);
+      if (el && el.innerHTML !== html) el.innerHTML = html;
+    }}
+    function setColor(id, color) {{
+      const el = document.getElementById(id);
+      if (el) el.style.color = color;
+    }}
+    function fmtSigned(n) {{
+      return (n >= 0 ? '+' : '') + n.toLocaleString('ko-KR') + '원';
+    }}
+    function fmtInt(n) {{ return n.toLocaleString('ko-KR') + '원'; }}
+
+    async function refreshNow() {{
+      try {{
+        const res = await fetch('/api/snapshot', {{cache: 'no-store'}});
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const snap = await res.json();
+        const s = snap.summary;
+        setText('updated-at', snap.updated_at);
+        setText('daily-pnl', fmtSigned(s.daily_pnl));    setColor('daily-pnl', s.pnl_color);
+        setText('unrealized-pnl', fmtSigned(s.unrealized_pnl)); setColor('unrealized-pnl', s.unr_color);
+        setText('active-count', s.active_count + '종목');
+        setText('closed-count', s.closed_count + '건');
+        setText('cand-count', s.cand_count + '종목');
+        setText('account-cash', fmtInt(s.account_cash));
+        setText('order-cash', fmtInt(s.order_cash));
+        setText('eval-amt', fmtInt(s.eval_amt));
+        setText('total-eval', fmtInt(s.total_eval));
+        setHTML('win-rate', s.win_rate.toFixed(1) + '% <small style="color:#888">(' + s.wins + '/' + s.total_trades + ')</small>');
+        setText('total-realized', fmtSigned(s.total_realized)); setColor('total-realized', s.total_realized_color);
+        setHTML('positions-tbody', snap.positions_html);
+        setHTML('candidates-tbody', snap.candidates_html);
+        setHTML('closed-tbody', snap.closed_html);
+        fetchCount++;
+        setText('fetch-count', fetchCount);
+        setHTML('live-status', '<span style="color:#00c9a7">● LIVE</span>');
+        failCount = 0;
+      }} catch (e) {{
+        failCount++;
+        setHTML('live-status', '<span style="color:#ff6b6b">● OFFLINE ('+failCount+')</span>');
+      }}
+    }}
+    setInterval(refreshNow, POLL_MS);
+  </script>
 </body>
 </html>"""
     return html
