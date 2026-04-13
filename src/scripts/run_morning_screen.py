@@ -31,6 +31,35 @@ from src.utils.logging_setup import setup
 log = setup("morning_screen")
 
 
+def _build_nxt_text(candidates: list) -> str:
+    """NXT 프리장 데이터 요약 (기존 후보 + 참조용).
+
+    에이전트가 '갭상승 중 거래대금 붙은 종목'은 우선순위 ↑,
+    '갭하락·거래 공백'은 경계 신호로 활용하도록 유도.
+    """
+    if not candidates:
+        return "NXT 데이터 없음 (기존 후보 없음)"
+    lines = ["[NXT 프리장 현황 — 기존 후보 기준]"]
+    for c in candidates:
+        gap = c.nxt_gap_pct
+        amt = c.nxt_trade_amount_bn
+        if gap is None:
+            lines.append(f"- {c.name}({c.symbol}): NXT 미거래")
+            continue
+        strength = "강세" if gap >= 2 else ("과열주의" if gap >= 5 else ("약세" if gap <= -1 else "보합"))
+        amt_str = f"{amt:.1f}억" if amt is not None else "-"
+        lines.append(
+            f"- {c.name}({c.symbol}): 갭 {gap:+.2f}% ({strength}), NXT 거래대금 {amt_str}"
+        )
+    lines.append("")
+    lines.append("판단 가이드:")
+    lines.append("* NXT 갭 +1~+3% + 거래대금 10억 이상: 당일 모멘텀 기대 → 우선순위↑")
+    lines.append("* NXT 갭 +5% 초과: 과열 — 추격 금지, 진입대 상향 조정 또는 제외")
+    lines.append("* NXT 갭 -1% 이하: 야간 악재 가능성 — 진입대 하향 또는 제외")
+    lines.append("* 거래대금 ≈ 0 (수백만원): NXT 신호 신뢰도 낮음 — 정규장 개장가 재평가")
+    return "\n".join(lines)
+
+
 def make_price_fetcher(kis: KisClient):
     """종목코드 리스트를 받아 현재가 + 기술지표를 반환하는 함수 생성.
 
@@ -52,6 +81,9 @@ def make_price_fetcher(kis: KisClient):
                 prdy_clpr = float(price_data.get("prdy_clpr", cur_px) or cur_px)
                 chg_pct = (cur_px / prdy_clpr - 1) * 100 if prdy_clpr else 0
                 name = price_data.get("hts_kor_isnm", sym)
+                # NXT 거래대금 (누적 거래대금 원)
+                acml_tr_pbmn = int(price_data.get("acml_tr_pbmn", 0) or 0)
+                nxt_amount_bn = acml_tr_pbmn / 1e8  # 억원 단위
 
                 result[sym] = {
                     "name": name,
@@ -66,6 +98,9 @@ def make_price_fetcher(kis: KisClient):
                     "volume_avg20": ind.get("volume_avg20", 0),
                     "above_ma20": ind.get("above_ma20"),
                     "trend_up": ind.get("trend_up"),
+                    "prev_close": prdy_clpr,
+                    "nxt_gap_pct": chg_pct if pre_market else None,
+                    "nxt_trade_amount_bn": nxt_amount_bn if pre_market else None,
                 }
                 log.info("  %s 조회 [%s] %s: %s원 (%+.2f%%)",
                          price_label, sym, name, f"{int(cur_px):,}", chg_pct)
@@ -109,12 +144,21 @@ def main() -> None:
                 price_data = kis.get_price(cand.symbol)
                 nxt_px = float(price_data.get("stck_prpr", 0) or 0)
                 nxt_vol = int(price_data.get("acml_vol", 0) or 0)
+                prdy_clpr = float(price_data.get("prdy_clpr", 0) or 0)
+                acml_tr_pbmn = int(price_data.get("acml_tr_pbmn", 0) or 0)
                 if nxt_px > 0:
                     cand.nxt_close = nxt_px
                     cand.nxt_volume = nxt_vol
+                    cand.prev_close = prdy_clpr if prdy_clpr > 0 else cand.prev_close
+                    if prdy_clpr > 0:
+                        cand.nxt_gap_pct = (nxt_px / prdy_clpr - 1) * 100
+                    cand.nxt_trade_amount_bn = acml_tr_pbmn / 1e8
             except Exception as e:
                 log.warning("기존 후보 가격 조회 실패 [%s]: %s", cand.symbol, e)
         state_store.save_candidates([c.to_dict() for c in active_candidates])
+
+    # NXT 요약 텍스트 (LLM 컨텍스트용)
+    nxt_text = _build_nxt_text(active_candidates) if is_pre_market() else "NXT 데이터 없음 (프리장 시간 외 실행)"
 
     # 4) 잔고 조회 → 종목당 투자 가능 금액 계산
     max_pos = cfg.trading.max_positions
@@ -166,6 +210,7 @@ def main() -> None:
         "dart_text": dart_text,
         "news_summary": news_text[:500],
         "budget_text": budget_text,
+        "nxt_text": nxt_text,
     }
 
     new_candidates, transcript, reserves = engine.run(context)

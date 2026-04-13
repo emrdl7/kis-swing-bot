@@ -122,7 +122,7 @@ class DebateEngine:
             )
 
         max_primary = self.screening_cfg.max_candidates
-        all_candidates = self._to_candidates(debate_results)
+        all_candidates = self._to_candidates(debate_results, price_ctx)
         candidates = all_candidates[:max_primary]
         reserves = all_candidates[max_primary:]
         log.info("최종 후보: %d개 (예비: %d개)", len(candidates), len(reserves))
@@ -293,11 +293,14 @@ class DebateEngine:
 
     # ── 변환 ────────────────────────────────────────────────────────────
 
-    def _to_candidates(self, results: list[DebateResult]) -> list[SwingCandidate]:
+    def _to_candidates(self, results: list[DebateResult],
+                        price_ctx: dict[str, dict] | None = None) -> list[SwingCandidate]:
         expiry_days = self.screening_cfg.entry_expiry_days
         now = datetime.now()
+        price_ctx = price_ctx or {}
         candidates = []
         for r in results:
+            d = price_ctx.get(r.symbol, {})
             candidates.append(SwingCandidate(
                 symbol=r.symbol,
                 name=r.name,
@@ -310,6 +313,10 @@ class DebateEngine:
                 tags=r.tags,
                 discovered_at=now,
                 expires_at=now + timedelta(days=expiry_days),
+                nxt_close=d.get("price") if d.get("nxt_gap_pct") is not None else None,
+                prev_close=d.get("prev_close"),
+                nxt_gap_pct=d.get("nxt_gap_pct"),
+                nxt_trade_amount_bn=d.get("nxt_trade_amount_bn"),
             ))
         return candidates
 
@@ -368,11 +375,16 @@ def _format_price_ctx(price_ctx: dict[str, dict]) -> str:
         return "실시간 가격 데이터 없음"
     lines = []
     for sym, d in price_ctx.items():
-        lines.append(
+        base = (
             f"{d.get('name', sym)}({sym}): 현재가 {int(d.get('price', 0)):,}원  "
             f"전일대비 {d.get('chg_pct', 0):+.2f}%  "
             f"MA5={int(d.get('ma5') or 0):,}  MA20={int(d.get('ma20') or 0):,}  "
             f"ATR14={int(d.get('atr14') or 0):,}  RSI={d.get('rsi14', '-')}  "
             f"거래량={d.get('last_volume', 0):,}"
         )
+        nxt_gap = d.get("nxt_gap_pct")
+        nxt_amt = d.get("nxt_trade_amount_bn")
+        if nxt_gap is not None:
+            base += f"  [NXT 갭 {nxt_gap:+.2f}% 거래대금 {nxt_amt or 0:.1f}억]"
+        lines.append(base)
     return "\n".join(lines)

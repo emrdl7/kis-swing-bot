@@ -90,8 +90,11 @@ class SwingCandidate:
     tags: list[str] = field(default_factory=list)
     discovered_at: datetime = field(default_factory=datetime.now)
     expires_at: Optional[datetime] = None         # 유효 만료 시각
-    nxt_close: Optional[float] = None             # NXT 종가 참조값
-    nxt_volume: Optional[int] = None              # NXT 거래량
+    nxt_close: Optional[float] = None             # NXT 현재가 (08:50 스크리닝 시)
+    nxt_volume: Optional[int] = None              # NXT 누적 거래량
+    nxt_gap_pct: Optional[float] = None           # NXT vs 전일종가 갭 (%)
+    nxt_trade_amount_bn: Optional[float] = None   # NXT 누적 거래대금 (억원)
+    prev_close: Optional[float] = None            # 전일 종가 (갭 계산용)
 
     def is_expired(self, now: Optional[datetime] = None) -> bool:
         if self.expires_at is None:
@@ -113,6 +116,9 @@ class SwingCandidate:
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
             "nxt_close": self.nxt_close,
             "nxt_volume": self.nxt_volume,
+            "nxt_gap_pct": self.nxt_gap_pct,
+            "nxt_trade_amount_bn": self.nxt_trade_amount_bn,
+            "prev_close": self.prev_close,
         }
 
     @classmethod
