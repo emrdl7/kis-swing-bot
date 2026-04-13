@@ -1,6 +1,8 @@
-"""장중 모니터링 엔진 — 30초 루프."""
+"""장중 모니터링 엔진 — 30초 루프 + WS 이벤트 드리븐 청산."""
 from __future__ import annotations
 import logging
+import queue
+import threading
 import time
 from datetime import datetime, timedelta
 
@@ -61,6 +63,21 @@ class MarketMonitor:
         self._daily_pnl: float = stats.get("realized_pnl", 0.0) if stats.get("date") == today_str else 0.0
         self._last_date: str = today_str if stats.get("date") == today_str else ""
 
+        # ── 이벤트 드리븐 청산 ──
+        # WS 스레드에서 가격을 수신하면 _on_price_update 콜백이 익절/손절 판단만 빠르게 수행
+        # 조건 성립 시 exit_queue에 밀어넣고, 별도 worker 스레드가 순차적으로 매도 주문 실행
+        self._exit_queue: queue.Queue = queue.Queue()
+        self._closing_symbols: set[str] = set()         # 진행 중인 매도 종목 (중복 방지)
+        self._closing_lock = threading.Lock()
+        self._worker_running = True
+        self._exit_worker_thread = threading.Thread(
+            target=self._exit_worker_loop, daemon=True, name="exit-worker",
+        )
+        self._exit_worker_thread.start()
+        if self.ws_client:
+            self.ws_client.set_price_callback(self._on_price_update)
+            log.info("이벤트 드리븐 청산 활성화 (WS 콜백 등록)")
+
     def run_forever(self) -> None:
         log.info("장중 모니터 시작 (interval=%ds, dry_run=%s)", POLL_INTERVAL_SEC, self.dry_run)
         try:
@@ -77,11 +94,94 @@ class MarketMonitor:
         except KeyboardInterrupt:
             log.info("모니터 종료")
         finally:
+            self._worker_running = False
             if self.ws_client:
                 self.ws_client.stop()
             self.kis.close()
 
     # ── 메인 틱 ────────────────────────────────────────────────────────────
+
+    def _on_price_update(self, symbol: str, price: float) -> None:
+        """WS 가격 수신 콜백. 이벤트 드리븐 청산 판단 — 블로킹 금지."""
+        if price <= 0:
+            return
+        # 진행 중이면 즉시 반환
+        with self._closing_lock:
+            if symbol in self._closing_symbols:
+                return
+        # 오직 장중 또는 프리장 매도 구간에서만 반응 (야간/마감 후 스킵)
+        now = now_kst()
+        cb_cfg = self.cfg.closing_bet
+        in_pm = (
+            cb_cfg.enabled and cb_cfg.pre_market_sell_enabled
+            and is_pre_market_sell_window(now, cb_cfg.pre_market_from_hhmm, cb_cfg.pre_market_to_hhmm)
+        )
+        if not is_regular_market(now) and not in_pm:
+            return
+        try:
+            positions = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
+        except Exception:
+            return
+        for pos in positions:
+            if pos.symbol != symbol or pos.state == PositionState.CLOSED:
+                continue
+            reason = None
+            # 프리장: CB 포지션만 NXT 목표/손절 체크
+            if in_pm:
+                if pos.strategy != "closing_bet":
+                    continue
+                if pos.entry_time.strftime("%Y-%m-%d") == now.strftime("%Y-%m-%d"):
+                    continue
+                pnl_pct = pos.pnl_pct(price)
+                if pnl_pct >= cb_cfg.pre_market_target_profit_pct:
+                    reason = (CloseReason.TAKE_PROFIT, "nxt")
+                elif pnl_pct <= -cb_cfg.pre_market_stop_loss_pct:
+                    reason = (CloseReason.STOP_LOSS, "nxt")
+            else:
+                # 정규장: 기존 PositionManager 규칙 (트레일링 갱신 포함)
+                pos2 = self.pos_mgr.update_trailing(pos, price)
+                should_exit, r = self.pos_mgr.check_exit(pos2, price, now)
+                if should_exit and r:
+                    reason = (r, "krx")
+            if reason:
+                with self._closing_lock:
+                    if symbol in self._closing_symbols:
+                        return
+                    self._closing_symbols.add(symbol)
+                log.info("[이벤트청산] %s %s @%.0f (%s)", symbol, reason[0].value, price, reason[1])
+                self._exit_queue.put((symbol, price, reason[0], reason[1]))
+                return
+
+    def _exit_worker_loop(self) -> None:
+        """이벤트 큐에서 청산 요청을 꺼내 순차 실행 (REST 블로킹 허용)."""
+        while self._worker_running:
+            try:
+                item = self._exit_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+            try:
+                symbol, price, reason, market = item
+                # 최신 포지션 재로드 — _tick이 방금 닫았을 수도 있음
+                positions = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
+                target = next(
+                    (p for p in positions if p.symbol == symbol and p.state != PositionState.CLOSED),
+                    None,
+                )
+                if target is None:
+                    log.debug("[이벤트청산] %s 이미 CLOSED — 스킵", symbol)
+                    continue
+                # 실행
+                if market == "nxt":
+                    self._close_position_nxt(target, price, reason)
+                else:
+                    self._close_position(target, price, reason)
+                # 즉시 영속화 (30초 틱을 기다리지 않음)
+                state_store.save_positions([p.to_dict() for p in positions])
+            except Exception as e:
+                log.error("[이벤트청산] 처리 실패: %s", e, exc_info=True)
+            finally:
+                with self._closing_lock:
+                    self._closing_symbols.discard(symbol)
 
     def _get_px(self, symbol: str) -> float:
         """WS 실시간 체결가 우선, 없거나 오래되면 REST로 fallback."""
@@ -193,6 +293,10 @@ class MarketMonitor:
         for pos in active_positions:
             if pos.state == PositionState.CLOSED:
                 continue
+            # 이벤트 워커가 이미 매도 진행 중이면 중복 방지
+            with self._closing_lock:
+                if pos.symbol in self._closing_symbols:
+                    continue
             try:
                 px = self._get_px(pos.symbol)
                 if px <= 0:

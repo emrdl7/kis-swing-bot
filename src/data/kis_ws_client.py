@@ -77,6 +77,7 @@ class KisWebSocketClient:
         self._ws = None                                     # 활성 websocket 커넥션 (재구독용)
         self._price_subs: set[str] = set()                  # 구독 중인 종목코드
         self._prices: dict[str, tuple[float, datetime]] = {}  # 종목코드 → (최신가, 수신시각)
+        self._price_callback = None                         # fn(symbol, price) — 가격 수신 시 호출
 
     @staticmethod
     def _build_ws_url(base_url: str) -> str:
@@ -250,6 +251,12 @@ class KisWebSocketClient:
             return None
         return px
 
+    def set_price_callback(self, fn) -> None:
+        """가격 수신 시 호출될 콜백 등록. fn(symbol: str, price: float).
+        콜백은 WS asyncio 스레드에서 호출되므로 블로킹 작업은 금지 — 큐로 던질 것.
+        """
+        self._price_callback = fn
+
     def snapshot_prices(self) -> dict[str, dict]:
         """전체 최신가 스냅샷 (대시보드/영속 저장용)."""
         with self._lock:
@@ -302,6 +309,12 @@ class KisWebSocketClient:
                         continue
                     with self._lock:
                         self._prices[symbol] = (px, datetime.now())
+                    cb = self._price_callback
+                    if cb:
+                        try:
+                            cb(symbol, px)
+                        except Exception as e:
+                            log.debug("price_callback 예외 %s: %s", symbol, e)
                 return
 
             if tr_id != _TR_CCNL:
