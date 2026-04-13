@@ -6,7 +6,10 @@ from datetime import datetime, timedelta
 
 from src.core.config import AppConfig
 from src.core import state_store
-from src.core.clock import is_regular_market, is_entry_allowed, is_closing_bet_entry, is_closing_bet_sell_time, now_kst
+from src.core.clock import (
+    is_regular_market, is_entry_allowed, is_closing_bet_entry,
+    is_closing_bet_sell_time, is_pre_market_sell_window, now_kst,
+)
 from src.core.models import CloseReason, PositionState, SwingCandidate, SwingPosition
 from src.data.kis_client import KisClient
 from src.data.kis_ws_client import KisWebSocketClient
@@ -107,7 +110,12 @@ class MarketMonitor:
             state_store.save_daily_stats({"date": today, "realized_pnl": 0.0, "trade_count": 0})
             log.info("날짜 변경 → 일일 PnL 초기화")
 
-        if not is_regular_market(now):
+        cb_cfg = self.cfg.closing_bet
+        in_pre_market_sell = (
+            cb_cfg.enabled and cb_cfg.pre_market_sell_enabled
+            and is_pre_market_sell_window(now, cb_cfg.pre_market_from_hhmm, cb_cfg.pre_market_to_hhmm)
+        )
+        if not is_regular_market(now) and not in_pre_market_sell:
             return
 
         if self.risk_mgr.is_daily_halt(self._daily_pnl):
@@ -120,6 +128,35 @@ class MarketMonitor:
         # WS 시세 구독 동기화 + 스냅샷을 파일로 영속화 (대시보드가 참조)
         self._sync_ws_subs(active_positions, candidates)
 
+        changed = False
+
+        # ── 프리장(NXT) CB 조기 매도 ──
+        if in_pre_market_sell:
+            for pos in active_positions:
+                if pos.strategy != "closing_bet":
+                    continue
+                if pos.entry_time.strftime("%Y-%m-%d") == today:
+                    continue  # 당일 진입분은 다음날이 아님
+                try:
+                    px = self._get_px(pos.symbol)
+                    if px <= 0:
+                        continue
+                    pnl_pct = pos.pnl_pct(px)
+                    if pnl_pct >= cb_cfg.pre_market_target_profit_pct:
+                        log.info("[NXT] %s 프리장 갭상승 익절 pnl=%.2f%%", pos.symbol, pnl_pct)
+                        if self._close_position_nxt(pos, px, CloseReason.TAKE_PROFIT):
+                            changed = True
+                    elif pnl_pct <= -cb_cfg.pre_market_stop_loss_pct:
+                        log.info("[NXT] %s 프리장 갭하락 손절 pnl=%.2f%%", pos.symbol, pnl_pct)
+                        if self._close_position_nxt(pos, px, CloseReason.STOP_LOSS):
+                            changed = True
+                except Exception as e:
+                    log.error("[NXT %s] 프리장 매도 체크 오류: %s", pos.symbol, e)
+            if changed:
+                state_store.save_positions([p.to_dict() for p in positions])
+            return  # 프리장에서는 엔트리/reconcile 스킵
+
+        # 정규장 로직
         # 후보 소진 시 자동 재토론 (쿨다운·한도 가드)
         active_cands = [c for c in candidates if not c.is_expired(now)]
         ok, reason = rescreen_trigger.should_rescreen(now, len(active_cands), manual=False)
@@ -127,10 +164,7 @@ class MarketMonitor:
             log.info("[재토론] 자동 트리거 — 활성 후보 %d개", len(active_cands))
             rescreen_trigger.trigger_rescreen(now, manual=False)
 
-        changed = False
-
         # ── 종가배팅 익일 오전 매도 ──
-        cb_cfg = self.cfg.closing_bet
         if cb_cfg.enabled and is_closing_bet_sell_time(now, cb_cfg.sell_before_hhmm):
             for pos in active_positions:
                 if pos.strategy != "closing_bet":
@@ -370,6 +404,49 @@ class MarketMonitor:
 
         if changed:
             state_store.save_positions([p.to_dict() for p in positions])
+
+    def _close_position_nxt(self, pos: SwingPosition, price: float, reason: CloseReason) -> bool:
+        """NXT 거래소 지정가 매도. 성공 시 True 반환."""
+        pnl_amount = int((price - pos.avg_price) * pos.qty)
+        pnl_pct = pos.pnl_pct(price)
+        log.info(
+            "[NXT %s] 매도 시도 reason=%s price=%.0f pnl=%.2f%% (%+d원)",
+            pos.symbol, reason.value, price, pnl_pct, pnl_amount,
+        )
+        if self.dry_run:
+            pos.state = PositionState.CLOSED
+            pos.close_reason = reason
+            pos.close_price = price
+            pos.close_time = datetime.now()
+            return True
+        try:
+            self.kis.sell_nxt(pos.symbol, pos.qty, price)
+        except Exception as e:
+            log.error("[NXT %s] 매도 주문 실패: %s — 정규장 재시도로 fallback", pos.symbol, e)
+            return False
+        import time as _t
+        _t.sleep(3)
+        qty_after = self.kis.get_holding_qty(pos.symbol)
+        if qty_after > 0:
+            log.warning("[NXT %s] 체결 미확인 (잔여 %d주), 정규장에서 재처리 대기", pos.symbol, qty_after)
+            return False
+        pos.state = PositionState.CLOSED
+        pos.close_reason = reason
+        pos.close_price = price
+        pos.close_time = datetime.now()
+        self._daily_pnl += pnl_amount
+        log.info("[NXT %s] 체결 완료. 오늘 누적 PnL: %+d원", pos.symbol, int(self._daily_pnl))
+        stats = state_store.load_daily_stats()
+        stats["date"] = now_kst().strftime("%Y-%m-%d")
+        stats["realized_pnl"] = self._daily_pnl
+        stats["trade_count"] = stats.get("trade_count", 0) + 1
+        state_store.save_daily_stats(stats)
+        apple_notes.report_trade(
+            "매도", pos.symbol, pos.name, price, pos.qty,
+            f"이유: {reason.value} (NXT 프리장)  PnL: {pnl_pct:+.2f}% ({pnl_amount:+,}원)\n"
+            f"오늘 누적 PnL: {int(self._daily_pnl):+,}원",
+        )
+        return True
 
     def _close_position(
         self,

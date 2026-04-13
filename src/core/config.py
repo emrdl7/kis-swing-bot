@@ -72,6 +72,12 @@ class ClosingBetConfig(BaseModel):
         "volume_ratio": 0.25,
         "ma_position": 0.20,
     }
+    # NXT 프리장(08:00~09:00) 조기 매도 옵션
+    pre_market_sell_enabled: bool = True
+    pre_market_from_hhmm: int = 800      # 프리장 매도 감시 시작
+    pre_market_to_hhmm: int = 855        # 프리장 매도 감시 종료 (정규장 직전)
+    pre_market_target_profit_pct: float = 4.0   # NXT 갭상승 익절 기준 (정규장보다 공격적)
+    pre_market_stop_loss_pct: float = 3.0       # NXT 갭하락 손절 기준
 
 
 class NotificationConfig(BaseModel):

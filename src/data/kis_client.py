@@ -237,6 +237,27 @@ class KisClient:
         log.info("매도 주문 [%s] qty=%d → %s", symbol, qty, result.get("msg1", ""))
         return result
 
+    def sell_nxt(self, symbol: str, qty: int, price: float) -> dict:
+        """NXT(넥스트레이드) 지정가 매도. 프리장(08:00~09:00) 구간 대응용.
+
+        NXT 거래소 라우팅(EXCG_ID_DVSN_CD=NXT) + 지정가 주문(ORD_DVSN=00).
+        계정에 NXT 권한이 없으면 KIS가 거부 응답을 반환함.
+        """
+        self.ensure_token()
+        tr_id = "VTTC0801U" if self._is_mock else "TTTC0801U"
+        body = {
+            "CANO": self.cfg.account_no[:8],
+            "ACNT_PRDT_CD": self._acnt_prdt_cd(),
+            "PDNO": symbol,
+            "ORD_DVSN": "00",           # 지정가 (NXT 시장가 미지원)
+            "ORD_QTY": str(qty),
+            "ORD_UNPR": str(int(price)),
+            "EXCG_ID_DVSN_CD": "NXT",
+        }
+        result = self._post_order_with_retry(tr_id, body)
+        log.info("NXT 매도 주문 [%s] qty=%d @%d → %s", symbol, qty, int(price), result.get("msg1", ""))
+        return result
+
     def get_holding_qty(self, symbol: str) -> int:
         """특정 종목 현재 보유 수량 조회."""
         try:

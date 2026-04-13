@@ -38,6 +38,11 @@ closing_bet:
   min_trade_amount_bn: 50
   min_change_pct: 2.0
   top_n: 30
+  pre_market_sell_enabled: true
+  pre_market_from_hhmm: 800
+  pre_market_to_hhmm: 855
+  pre_market_target_profit_pct: 4.0
+  pre_market_stop_loss_pct: 3.0
 notification:
   enabled: false
 dart:

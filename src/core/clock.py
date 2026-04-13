@@ -53,6 +53,13 @@ def is_pre_market(dt: datetime | None = None) -> bool:
     return PRE_MARKET_OPEN <= t < MARKET_OPEN
 
 
+def is_pre_market_sell_window(dt: datetime | None = None,
+                                from_hhmm: int = 800, to_hhmm: int = 855) -> bool:
+    """NXT 프리장 CB 매도 감시 시간대."""
+    t = (dt or now_kst()).time()
+    return hhmm_to_time(from_hhmm) <= t <= hhmm_to_time(to_hhmm)
+
+
 def is_nxt_after_hours(dt: datetime | None = None) -> bool:
     """NXT 장후 (16:00 ~ 18:00)."""
     t = (dt or now_kst()).time()
