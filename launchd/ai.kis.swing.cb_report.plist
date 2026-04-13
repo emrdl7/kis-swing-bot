@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.kis.swing.cb_report</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/johyeonchang/services/kis-swing-bot/.venv/bin/python3</string>
+    <string>/Users/johyeonchang/services/kis-swing-bot/src/scripts/run_cb_report.py</string>
+  </array>
+
+  <!-- 매일 10:10 실행 (CB 익일 오전 매도 완료 후 리포트) -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>10</integer>
+    <key>Minute</key>
+    <integer>10</integer>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/johyeonchang/services/kis-swing-bot</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/johyeonchang/services/kis-swing-bot/logs/cb_report.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/johyeonchang/services/kis-swing-bot/logs/cb_report.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <key>PYTHONPATH</key>
+    <string>/Users/johyeonchang/services/kis-swing-bot</string>
+  </dict>
+</dict>
+</plist>
