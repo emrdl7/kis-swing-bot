@@ -440,10 +440,34 @@ class MarketMonitor:
                         changed = True
             for symbol, kis in kis_holdings.items():
                 if not any(p.symbol == symbol for p in active_positions):
-                    log.warning(
-                        "⚠️ KIS 잔고 [%s] %d주 있으나 positions.json에 없음 — 수동 매수 또는 누락",
-                        symbol, kis["qty"],
-                    )
+                    # candidates 에 있던 종목 → 봇 의도 매수였으므로 자동 복구
+                    cand_match = next((c for c in candidates if c.symbol == symbol), None)
+                    if cand_match:
+                        is_cb = "closing_bet" in (cand_match.tags or [])
+                        new_pos = SwingPosition(
+                            symbol=symbol,
+                            name=cand_match.name,
+                            qty=kis["qty"],
+                            avg_price=kis["avg"] or 0.0,
+                            entry_time=now,
+                            target_price=cand_match.target_price,
+                            stop_price=cand_match.stop_price,
+                            state=PositionState.ENTERED,
+                            peak_price=kis["avg"] or 0.0,
+                            strategy="closing_bet" if is_cb else "swing",
+                        )
+                        positions.append(new_pos)
+                        active_positions.append(new_pos)
+                        changed = True
+                        log.warning(
+                            "⚠️ KIS 잔고 [%s] %d주 positions.json 누락 → 후보(%s) 기반 자동 복구 완료",
+                            symbol, kis["qty"], new_pos.strategy,
+                        )
+                    else:
+                        log.warning(
+                            "⚠️ KIS 잔고 [%s] %d주 있으나 positions·candidates 모두에 없음 — 수동 매수로 추정, 봇 미관리",
+                            symbol, kis["qty"],
+                        )
         except Exception as e:
             log.error("잔고 조회/대사 실패: %s", e)
 

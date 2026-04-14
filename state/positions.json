@@ -219,5 +219,22 @@
     "close_time": "2026-04-14T15:20:46",
     "order_id": null,
     "strategy": "swing"
+  },
+  {
+    "symbol": "008350",
+    "name": "남선알미늄",
+    "qty": 73,
+    "avg_price": 3080.0,
+    "entry_time": "2026-04-14T15:20:10",
+    "target_price": 3188,
+    "stop_price": 3049,
+    "state": "ENTERED",
+    "peak_price": 3080.0,
+    "trailing_stop_px": null,
+    "close_reason": null,
+    "close_price": null,
+    "close_time": null,
+    "order_id": null,
+    "strategy": "closing_bet"
   }
 ]
