@@ -10,7 +10,7 @@ exit:
   take_profit_pct: 4.0
   stop_loss_pct: 3.0
   trailing_activate_pct: 2.5
-  trailing_pct: 1.5
+  trailing_pct: 1.2
   eod_sell_hhmm: 1510
   eod_sell_enabled: false
 screening:
