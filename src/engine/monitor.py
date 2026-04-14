@@ -383,14 +383,43 @@ class MarketMonitor:
                             pos.symbol, pos.qty, miss,
                         )
                     else:
+                        # 3틱 연속 KIS=0 → 실제 매도 체결가 조회해서 정확히 CLOSED 처리
+                        # (수동 매도·외부 앱 매도·봇 누락 등 모든 경로 커버)
+                        actual_px = pos.avg_price
+                        reason = CloseReason.RECONCILE_KIS_ZERO
+                        try:
+                            execs = self.kis.get_today_executions(pos.symbol)
+                            sells = [e for e in execs if e.get("sll_buy_dvsn_cd") == "01"]
+                            if sells:
+                                total_qty = sum(int(e.get("tot_ccld_qty", 0) or 0) for e in sells)
+                                total_amt = sum(int(e.get("tot_ccld_amt", 0) or 0) for e in sells)
+                                if total_qty > 0:
+                                    avg_sell = total_amt / total_qty
+                                    actual_px = avg_sell
+                                    reason = CloseReason.MANUAL  # 봇 주문 경로가 아니면 수동으로 간주
+                                    log.info(
+                                        "[%s] 체결내역에서 실제 매도가 확인: %.0f원 (총 %d주 %d원)",
+                                        pos.symbol, avg_sell, total_qty, total_amt,
+                                    )
+                        except Exception as e:
+                            log.warning("[%s] 체결내역 조회 실패, avg_price로 fallback: %s", pos.symbol, e)
+                        pnl_amt = int((actual_px - pos.avg_price) * pos.qty)
                         log.error(
-                            "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=0주 — %d틱 연속 확인, ghost position CLOSED 처리",
-                            pos.symbol, pos.qty, miss,
+                            "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=0주 — %d틱 연속 → CLOSED (%s, %.0f원, PnL %+d원)",
+                            pos.symbol, pos.qty, miss, reason.value, actual_px, pnl_amt,
                         )
                         pos.state = PositionState.CLOSED
-                        pos.close_reason = CloseReason.RECONCILE_KIS_ZERO
-                        pos.close_price = pos.avg_price
+                        pos.close_reason = reason
+                        pos.close_price = actual_px
                         pos.close_time = now
+                        # PnL 집계 (avg_price와 같으면 0원이라 noop)
+                        if actual_px != pos.avg_price:
+                            self._daily_pnl += pnl_amt
+                            stats = state_store.load_daily_stats()
+                            stats["date"] = now.strftime("%Y-%m-%d")
+                            stats["realized_pnl"] = self._daily_pnl
+                            stats["trade_count"] = int(stats.get("trade_count", 0)) + 1
+                            state_store.save_daily_stats(stats)
                         self._reconcile_miss.pop(pos.symbol, None)
                         changed = True
                 else:
