@@ -29,8 +29,8 @@ agents:
 closing_bet:
   enabled: true
   screening_hhmm: 1450
-  entry_from_hhmm: 1520
-  entry_to_hhmm: 1525
+  entry_from_hhmm: 1515
+  entry_to_hhmm: 1519
   sell_before_hhmm: 1000
   target_profit_pct: 3.0
   stop_loss_pct: 1.5

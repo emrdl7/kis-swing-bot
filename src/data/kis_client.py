@@ -204,7 +204,7 @@ class KisClient:
         raise last_exc or RuntimeError("주문 실패")
 
     def buy_market(self, symbol: str, qty: int) -> dict:
-        """시장가 매수."""
+        """시장가 매수. 동시호가 구간 등 시장가 거부 시 지정가(상한+1호가)로 자동 재시도."""
         self.ensure_token()
         tr_id = "VTTC0802U" if self._is_mock else "TTTC0802U"
         body = {
@@ -216,9 +216,33 @@ class KisClient:
             "ORD_UNPR": "0",
             "EXCG_ID_DVSN_CD": "KRX",
         }
-        result = self._post_order_with_retry(tr_id, body)
-        log.info("매수 주문 [%s] qty=%d → %s", symbol, qty, result.get("msg1", ""))
-        return result
+        try:
+            result = self._post_order_with_retry(tr_id, body)
+            log.info("매수 주문 [%s] qty=%d → %s", symbol, qty, result.get("msg1", ""))
+            return result
+        except RuntimeError as e:
+            # 동시호가 또는 시장가 제한 상황 → 지정가(현재가 상한)로 즉시 재시도
+            emsg = str(e)
+            if "주문가능금액" in emsg or "시장가" in emsg or "단가" in emsg:
+                try:
+                    pd = self.get_price(symbol)
+                    cur_px = float(pd.get("stck_prpr", 0) or 0)
+                    ref = float(pd.get("stck_mxpr", 0) or 0) or cur_px  # 상한가 선호
+                    if cur_px <= 0:
+                        raise
+                    # 체결 우선 → 상한가에 지정가
+                    body2 = dict(body)
+                    body2["ORD_DVSN"] = "00"
+                    body2["ORD_UNPR"] = str(int(ref))
+                    result = self._post_order_with_retry(tr_id, body2)
+                    log.info(
+                        "매수 주문(지정가 fallback) [%s] qty=%d @%d → %s",
+                        symbol, qty, int(ref), result.get("msg1", ""),
+                    )
+                    return result
+                except Exception as e2:
+                    log.error("[%s] 지정가 fallback 실패: %s", symbol, e2)
+            raise
 
     def sell_market(self, symbol: str, qty: int) -> dict:
         """시장가 매도."""
