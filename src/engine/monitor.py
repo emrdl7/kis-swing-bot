@@ -458,9 +458,12 @@ class MarketMonitor:
                         )
                         positions.append(new_pos)
                         active_positions.append(new_pos)
+                        # candidates에서 즉시 제거 (진입 완료 처리와 동일하게)
+                        candidates = [c for c in candidates if c.symbol != symbol]
+                        state_store.save_candidates([c.to_dict() for c in candidates])
                         changed = True
                         log.warning(
-                            "⚠️ KIS 잔고 [%s] %d주 positions.json 누락 → 후보(%s) 기반 자동 복구 완료",
+                            "⚠️ KIS 잔고 [%s] %d주 positions.json 누락 → 후보(%s) 기반 자동 복구 + candidates 제거",
                             symbol, kis["qty"], new_pos.strategy,
                         )
                     else:
