@@ -272,11 +272,23 @@ class MarketMonitor:
             return  # 프리장에서는 엔트리/reconcile 스킵
 
         # 정규장 로직
-        # 후보 소진 시 자동 재토론 (쿨다운·한도 가드)
+        # 후보 소진 또는 묵은 후보 자동 재토론 (쿨다운·한도 가드)
         active_cands = [c for c in candidates if not c.is_expired(now)]
-        ok, reason = rescreen_trigger.should_rescreen(now, len(active_cands), manual=False)
+        swing_active = [p for p in active_positions if (p.strategy or "swing") == "swing"]
+        slots_full = len(swing_active) >= self.cfg.trading.max_positions
+        oldest_hours = 0.0
+        if active_cands:
+            oldest = min(c.discovered_at for c in active_cands)
+            oldest_hours = (now - oldest).total_seconds() / 3600
+        ok, reason = rescreen_trigger.should_rescreen(
+            now, len(active_cands), manual=False,
+            slots_full=slots_full, oldest_cand_age_hours=oldest_hours,
+        )
         if ok:
-            log.info("[재토론] 자동 트리거 — 활성 후보 %d개", len(active_cands))
+            log.info(
+                "[재토론] 자동 트리거 — 후보 %d개, 슬롯full=%s, 최고령 %.1fh",
+                len(active_cands), slots_full, oldest_hours,
+            )
             rescreen_trigger.trigger_rescreen(now, manual=False)
 
         # ── 종가배팅 익일 오전 매도 ──

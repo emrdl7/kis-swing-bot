@@ -15,7 +15,7 @@ from datetime import datetime
 from src.core.config import load_config
 from src.core import state_store
 from src.core.clock import is_pre_market
-from src.core.models import SwingCandidate
+from src.core.models import SwingCandidate, SwingPosition
 from src.data.kis_client import KisClient
 from src.data.dart_client import DartClient
 from src.data.news_fetcher import fetch_news, format_for_llm as news_fmt
@@ -219,17 +219,26 @@ def main() -> None:
 
     apple_notes.report_debate(transcript, today)
 
-    # 5) 기존 후보 + 신규 후보 병합
-    existing_symbols = {c.symbol for c in active_candidates}
-    merged = list(active_candidates)
+    # 5) 매일 아침: 오늘 토론 결과로 전체 교체 (신선도 확보)
+    # 단, 이미 보유 중인 포지션 종목이 기존 후보에 있었다면 그대로 유지
+    #  → (동일 종목 재진입은 entry_executor가 별도 차단)
+    #  → 보유 종목의 진입대/목표가 참조가 필요할 경우 대비
+    held_positions = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
+    held_symbols = {p.symbol for p in held_positions if p.state.value != "CLOSED"}
+    preserved = [c for c in active_candidates if c.symbol in held_symbols]
+    merged = list(preserved)
+    existing_symbols = {c.symbol for c in preserved}
     for cand in new_candidates:
         if cand.symbol not in existing_symbols:
             merged.append(cand)
             existing_symbols.add(cand.symbol)
+    dropped = len(active_candidates) - len(preserved)
+    if dropped > 0:
+        log.info("기존 묵은 후보 %d개 폐기 (신선도 우선)", dropped)
 
     merged = merged[:cfg.screening.max_candidates]
     state_store.save_candidates([c.to_dict() for c in merged])
-    log.info("저장된 후보 총 %d개", len(merged))
+    log.info("저장된 후보 총 %d개 (신규 %d + 보유연계 %d)", len(merged), len(merged) - len(preserved), len(preserved))
 
     for i, c in enumerate(merged, 1):
         exp_str = c.expires_at.strftime("%m/%d") if c.expires_at else "-"

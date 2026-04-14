@@ -30,6 +30,7 @@ PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python3"
 MAX_PER_DAY = 2
 COOLDOWN_MIN = 120
 LOW_CAND_THRESHOLD = 1        # 이 수 이하면 자동 트리거
+STALE_CAND_DAYS = 2           # 후보가 이만큼 묵으면 슬롯 차있어도 재토론 유도
 BLACKOUT_START = time(9, 0)   # 이 시각부터
 BLACKOUT_END = time(9, 10)    # 이 시각까지 스킵 (모닝 직후)
 CUTOFF = time(14, 30)         # 이후는 진입 시간 부족 → 스킵
@@ -61,8 +62,20 @@ def _is_locked() -> bool:
         return False
 
 
-def should_rescreen(now: datetime, cand_count: int, manual: bool = False) -> tuple[bool, str]:
-    """재토론 가능 여부 + 사유. manual=True 면 임계값 조건만 무시하고 나머지 가드는 적용."""
+def should_rescreen(
+    now: datetime,
+    cand_count: int,
+    manual: bool = False,
+    slots_full: bool = False,
+    oldest_cand_age_hours: float = 0.0,
+) -> tuple[bool, str]:
+    """재토론 가능 여부 + 사유.
+
+    자동 트리거 조건 (manual=False):
+     - 후보 수 ≤ LOW_CAND_THRESHOLD, 또는
+     - 슬롯이 꽉 찼고 가장 오래된 후보 경과가 STALE_CAND_DAYS 이상
+    manual=True 면 임계값 조건 무시, 나머지 가드는 적용.
+    """
     if _is_locked():
         return False, "이미 실행 중"
     t = now.time()
@@ -70,8 +83,15 @@ def should_rescreen(now: datetime, cand_count: int, manual: bool = False) -> tup
         return False, "모닝 스크린 직후 시간대"
     if t >= CUTOFF:
         return False, "장 마감 임박 (14:30 이후)"
-    if not manual and cand_count > LOW_CAND_THRESHOLD:
-        return False, f"후보 {cand_count}개 — 임계({LOW_CAND_THRESHOLD}) 초과"
+
+    if not manual:
+        low = cand_count <= LOW_CAND_THRESHOLD
+        stale = slots_full and oldest_cand_age_hours >= STALE_CAND_DAYS * 24
+        if not (low or stale):
+            return False, (
+                f"후보 {cand_count}개, 슬롯 full={slots_full}, "
+                f"최고령 {oldest_cand_age_hours:.1f}h — 임계 미달"
+            )
 
     today = now.strftime("%Y-%m-%d")
     st = _load_state()
