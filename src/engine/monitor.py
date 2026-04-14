@@ -429,12 +429,15 @@ class MarketMonitor:
         if not swing_ok and not cb_ok:
             return
 
-        # 오늘 이미 거래된 종목 (진입 또는 당일 청산) → 재진입 금지
+        # 오늘 이미 거래된 종목 (당일 진입 또는 당일 매도된 것) → 재진입 금지
+        # 버그 수정: 어제 진입 → 오늘 매도된 종목이 바로 재매수되는 문제 방지
         today_str = today
-        traded_today = {
-            p.symbol for p in positions
-            if p.entry_time.strftime("%Y-%m-%d") == today_str
-        }
+        traded_today: set[str] = set()
+        for p in positions:
+            if p.entry_time.strftime("%Y-%m-%d") == today_str:
+                traded_today.add(p.symbol)
+            if p.close_time and p.close_time.strftime("%Y-%m-%d") == today_str:
+                traded_today.add(p.symbol)
 
         active_now = [p for p in positions if p.state != PositionState.CLOSED]
         entered_symbols: set[str] = set()  # 이번 틱에서 진입한 종목
