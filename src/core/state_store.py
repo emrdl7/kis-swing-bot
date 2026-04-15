@@ -86,3 +86,12 @@ def load_realtime_prices() -> dict:
 
 def save_realtime_prices(data: dict) -> None:
     save("realtime_prices", data)
+
+
+def load_pre_open_orders() -> dict:
+    """동시호가 사전 손절 주문 트래킹 (symbol → {order_no, qty, stop_price, date})."""
+    return load("pre_open_orders", {})
+
+
+def save_pre_open_orders(data: dict) -> None:
+    save("pre_open_orders", data)

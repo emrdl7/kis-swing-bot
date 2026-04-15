@@ -60,6 +60,12 @@ def is_pre_market_sell_window(dt: datetime | None = None,
     return hhmm_to_time(from_hhmm) <= t <= hhmm_to_time(to_hhmm)
 
 
+def is_open_call_auction(dt: datetime | None = None) -> bool:
+    """KRX 시초 동시호가 (08:30 ~ 08:59). 사전 손절 지정가 주문 가능 시간."""
+    t = (dt or now_kst()).time()
+    return time(8, 30) <= t < time(9, 0)
+
+
 def is_nxt_after_hours(dt: datetime | None = None) -> bool:
     """NXT 장후 (16:00 ~ 18:00)."""
     t = (dt or now_kst()).time()

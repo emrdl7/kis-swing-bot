@@ -4,13 +4,14 @@ import logging
 import queue
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, time as dtime, timedelta
 
 from src.core.config import AppConfig
 from src.core import state_store
 from src.core.clock import (
     is_regular_market, is_entry_allowed, is_closing_bet_entry,
-    is_closing_bet_sell_time, is_pre_market_sell_window, now_kst,
+    is_closing_bet_sell_time, is_pre_market_sell_window,
+    is_open_call_auction, now_kst,
 )
 from src.core.models import CloseReason, PositionState, SwingCandidate, SwingPosition
 from src.data.kis_client import KisClient
@@ -100,6 +101,61 @@ class MarketMonitor:
             self.kis.close()
 
     # ── 메인 틱 ────────────────────────────────────────────────────────────
+
+    def _ensure_pre_open_stops(self, active_positions, today: str) -> None:
+        """KRX 동시호가 시간(08:30~08:59)에 보유 종목별 손절 지정가 매도 주문을 미리 등록.
+
+        시초가가 stop_price 이하면 09:00 단일가에 자동 체결되어 갭하락 손실 차단.
+        하루에 한 번만 등록, state 파일에 order_no 트래킹.
+        """
+        if self.dry_run:
+            return
+        tracked = state_store.load_pre_open_orders() or {}
+        # 다른 날짜 잔여물 정리
+        tracked = {s: v for s, v in tracked.items() if v.get("date") == today}
+        changed_state = False
+        for pos in active_positions:
+            if pos.symbol in tracked:
+                continue  # 이미 등록됨
+            if not pos.stop_price or pos.stop_price <= 0:
+                continue
+            try:
+                resp = self.kis.sell_limit(pos.symbol, pos.qty, pos.stop_price)
+                ord_no = (resp.get("output") or {}).get("ODNO", "")
+                tracked[pos.symbol] = {
+                    "order_no": ord_no, "qty": pos.qty,
+                    "stop_price": float(pos.stop_price), "date": today,
+                }
+                changed_state = True
+                log.info("[사전손절] %s %d주 @%.0f 등록 (order_no=%s)",
+                         pos.symbol, pos.qty, pos.stop_price, ord_no)
+            except Exception as e:
+                log.error("[사전손절] %s 등록 실패: %s", pos.symbol, e)
+        if changed_state:
+            state_store.save_pre_open_orders(tracked)
+
+    def _cancel_pre_open_stops(self, today: str) -> None:
+        """09:00 정규장 시작 후 미체결 사전 손절 주문 일괄 취소.
+        체결된 주문은 자연스럽게 취소 시도가 거부되며 무시됨."""
+        if self.dry_run:
+            return
+        tracked = state_store.load_pre_open_orders() or {}
+        if not tracked:
+            return
+        remaining = {}
+        for sym, info in list(tracked.items()):
+            if info.get("date") != today:
+                continue  # 다른 날 → 폐기
+            ord_no = info.get("order_no")
+            if not ord_no:
+                continue
+            try:
+                self.kis.cancel_order(ord_no)
+                log.info("[사전손절] %s 미체결 주문 취소 완료 (order_no=%s)", sym, ord_no)
+            except Exception as e:
+                # 이미 체결됐거나 취소 실패 — 정상 케이스 (체결됨)
+                log.info("[사전손절] %s 취소 시도 결과: %s (체결됐을 가능성)", sym, e)
+        state_store.save_pre_open_orders({})
 
     def _on_price_update(self, symbol: str, price: float) -> None:
         """WS 가격 수신 콜백. 이벤트 드리븐 청산 판단 — 블로킹 금지."""
@@ -224,6 +280,21 @@ class MarketMonitor:
             cb_cfg.enabled and cb_cfg.pre_market_sell_enabled
             and is_pre_market_sell_window(now, cb_cfg.pre_market_from_hhmm, cb_cfg.pre_market_to_hhmm)
         )
+
+        # KRX 동시호가 시간(08:30~08:59)에 보유 종목별 사전 손절 지정가 등록
+        # 정규장 09:00 직후(09:00~09:01)에 미체결분 일괄 취소 — 봇 동적 로직 인계
+        if is_open_call_auction(now):
+            try:
+                positions_for_pre = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
+                active_for_pre = [p for p in positions_for_pre if p.state != PositionState.CLOSED]
+                self._ensure_pre_open_stops(active_for_pre, today)
+            except Exception as e:
+                log.error("사전 손절 등록 실패: %s", e)
+        elif is_regular_market(now) and now.time() < dtime(9, 2):
+            try:
+                self._cancel_pre_open_stops(today)
+            except Exception as e:
+                log.error("사전 손절 취소 실패: %s", e)
         # 장·프리장 외 시간에도 WS 구독 동기화 + 가격 스냅샷 저장은 수행
         # (대시보드가 NXT 프리장/시간외 가격을 보려면 캐시가 살아있어야 함)
         if not is_regular_market(now) and not in_pre_market_sell:

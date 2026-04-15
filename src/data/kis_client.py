@@ -261,6 +261,49 @@ class KisClient:
         log.info("매도 주문 [%s] qty=%d → %s", symbol, qty, result.get("msg1", ""))
         return result
 
+    def sell_limit(self, symbol: str, qty: int, price: float) -> dict:
+        """KRX 지정가 매도. 동시호가에 미리 손절가 걸어둘 때 사용.
+        반환 dict의 output.ODNO 가 주문번호 (취소·정정에 필요).
+        """
+        self.ensure_token()
+        tr_id = "VTTC0801U" if self._is_mock else "TTTC0801U"
+        body = {
+            "CANO": self.cfg.account_no[:8],
+            "ACNT_PRDT_CD": self._acnt_prdt_cd(),
+            "PDNO": symbol,
+            "ORD_DVSN": "00",          # 지정가
+            "ORD_QTY": str(qty),
+            "ORD_UNPR": str(int(price)),
+            "EXCG_ID_DVSN_CD": "KRX",
+        }
+        result = self._post_order_with_retry(tr_id, body)
+        log.info("KRX 지정가 매도 [%s] qty=%d @%d → %s",
+                 symbol, qty, int(price), result.get("msg1", ""))
+        return result
+
+    def cancel_order(self, order_no: str, branch_no: str = "") -> dict:
+        """미체결 주문 전량 취소."""
+        self.ensure_token()
+        tr_id = "VTTC0803U" if self._is_mock else "TTTC0803U"
+        url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/trading/order-rvsecncl"
+        body = {
+            "CANO": self.cfg.account_no[:8],
+            "ACNT_PRDT_CD": self._acnt_prdt_cd(),
+            "KRX_FWDG_ORD_ORGNO": branch_no,
+            "ORGN_ODNO": order_no,
+            "ORD_DVSN": "00",
+            "RVSE_CNCL_DVSN_CD": "02",  # 02=취소, 01=정정
+            "ORD_QTY": "0",
+            "ORD_UNPR": "0",
+            "QTY_ALL_ORD_YN": "Y",     # 잔량 전부 취소
+        }
+        hk = self._hashkey(body)
+        resp = self._client.post(url, headers=self._headers(tr_id, hashkey=hk), json=body)
+        resp.raise_for_status()
+        data = resp.json()
+        log.info("주문 취소 [order=%s] → %s", order_no, data.get("msg1", ""))
+        return data
+
     def sell_nxt(self, symbol: str, qty: int, price: float) -> dict:
         """NXT(넥스트레이드) 지정가 매도. 프리장(08:00~09:00) 구간 대응용.
 
