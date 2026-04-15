@@ -132,17 +132,20 @@ class MarketMonitor:
             if pos.symbol != symbol or pos.state == PositionState.CLOSED:
                 continue
             reason = None
-            # 프리장: CB 포지션만 NXT 목표/손절 체크
+            # 프리장: CB는 익절+손절, 스윙은 갭하락 손절만
             if in_pm:
-                if pos.strategy != "closing_bet":
-                    continue
                 if pos.entry_time.strftime("%Y-%m-%d") == now.strftime("%Y-%m-%d"):
                     continue
                 pnl_pct = pos.pnl_pct(price)
-                if pnl_pct >= cb_cfg.pre_market_target_profit_pct:
-                    reason = (CloseReason.TAKE_PROFIT, "nxt")
-                elif pnl_pct <= -cb_cfg.pre_market_stop_loss_pct:
-                    reason = (CloseReason.STOP_LOSS, "nxt")
+                if pos.strategy == "closing_bet":
+                    if pnl_pct >= cb_cfg.pre_market_target_profit_pct:
+                        reason = (CloseReason.TAKE_PROFIT, "nxt")
+                    elif pnl_pct <= -cb_cfg.pre_market_stop_loss_pct:
+                        reason = (CloseReason.STOP_LOSS, "nxt")
+                else:
+                    swing_pre_stop = max(self.cfg.exit.stop_loss_pct, 3.0) + 0.5
+                    if pnl_pct <= -swing_pre_stop:
+                        reason = (CloseReason.STOP_LOSS, "nxt")
             else:
                 # 정규장: 기존 PositionManager 규칙 (트레일링 갱신 포함)
                 pos2 = self.pos_mgr.update_trailing(pos, price)
@@ -245,11 +248,9 @@ class MarketMonitor:
 
         changed = False
 
-        # ── 프리장(NXT) CB 조기 매도 ──
+        # ── 프리장(NXT) 매도 (CB: 익절+손절, 스윙: 갭하락 손절만) ──
         if in_pre_market_sell:
             for pos in active_positions:
-                if pos.strategy != "closing_bet":
-                    continue
                 if pos.entry_time.strftime("%Y-%m-%d") == today:
                     continue  # 당일 진입분은 다음날이 아님
                 try:
@@ -257,14 +258,26 @@ class MarketMonitor:
                     if px <= 0:
                         continue
                     pnl_pct = pos.pnl_pct(px)
-                    if pnl_pct >= cb_cfg.pre_market_target_profit_pct:
-                        log.info("[NXT] %s 프리장 갭상승 익절 pnl=%.2f%%", pos.symbol, pnl_pct)
-                        if self._close_position_nxt(pos, px, CloseReason.TAKE_PROFIT):
-                            changed = True
-                    elif pnl_pct <= -cb_cfg.pre_market_stop_loss_pct:
-                        log.info("[NXT] %s 프리장 갭하락 손절 pnl=%.2f%%", pos.symbol, pnl_pct)
-                        if self._close_position_nxt(pos, px, CloseReason.STOP_LOSS):
-                            changed = True
+                    is_cb = (pos.strategy == "closing_bet")
+                    if is_cb:
+                        # CB: 익절 + 손절 양방향
+                        if pnl_pct >= cb_cfg.pre_market_target_profit_pct:
+                            log.info("[NXT-CB] %s 프리장 갭상승 익절 pnl=%.2f%%", pos.symbol, pnl_pct)
+                            if self._close_position_nxt(pos, px, CloseReason.TAKE_PROFIT):
+                                changed = True
+                        elif pnl_pct <= -cb_cfg.pre_market_stop_loss_pct:
+                            log.info("[NXT-CB] %s 프리장 갭하락 손절 pnl=%.2f%%", pos.symbol, pnl_pct)
+                            if self._close_position_nxt(pos, px, CloseReason.STOP_LOSS):
+                                changed = True
+                    else:
+                        # 스윙: 갭하락 방어만 (추세 초입 조기 익절 방지)
+                        # 손절선은 정규장 stop_loss_pct(3%)보다 약간 보수적으로 -3.5% 적용
+                        swing_pre_stop = max(self.cfg.exit.stop_loss_pct, 3.0) + 0.5
+                        if pnl_pct <= -swing_pre_stop:
+                            log.info("[NXT-SW] %s 프리장 갭하락 손절 pnl=%.2f%% (기준 -%.1f%%)",
+                                     pos.symbol, pnl_pct, swing_pre_stop)
+                            if self._close_position_nxt(pos, px, CloseReason.STOP_LOSS):
+                                changed = True
                 except Exception as e:
                     log.error("[NXT %s] 프리장 매도 체크 오류: %s", pos.symbol, e)
             if changed:
