@@ -56,20 +56,30 @@ class LLMClient:
 
     # ── 호출 ────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _bin_available(path_or_name: str) -> bool:
+        """절대경로면 파일 존재 + 실행권한 확인, 아니면 PATH 탐색."""
+        if not path_or_name:
+            return False
+        if os.path.isabs(path_or_name):
+            return os.path.isfile(path_or_name) and os.access(path_or_name, os.X_OK)
+        return shutil.which(path_or_name) is not None
+
     def _call(self, prompt: str, system: str = "") -> str:
         # 1차: Claude
         text = self._call_claude(prompt, system)
         if text:
             return text
         # 2차: Gemini fallback
-        if shutil.which(_gemini_bin()):
-            log.warning("Claude 실패 → Gemini fallback 시도 (model=%s)", self.gemini_model)
+        gbin = _gemini_bin()
+        if self._bin_available(gbin):
+            log.warning("Claude 실패 → Gemini fallback 시도 (bin=%s model=%s)", gbin, self.gemini_model)
             text = self._call_gemini(prompt, system)
             if text:
                 return text
             log.error("Gemini fallback 도 실패")
         else:
-            log.error("Gemini 바이너리 미설치 → fallback 불가")
+            log.error("Gemini 바이너리 없음 (%s) — fallback 불가. GEMINI_BIN 환경변수 확인 필요", gbin)
         return ""
 
     def _call_claude(self, prompt: str, system: str) -> str:
