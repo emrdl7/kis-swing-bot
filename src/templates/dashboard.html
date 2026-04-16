@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>KIS Swing Bot</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <h1>KIS Swing Bot
+    <button class="theme-toggle" onclick="toggleTheme()">테마</button>
+    <button id="rescreen-btn" onclick="triggerRescreen()"
+      style="float:right;background:#2a3a5c;color:#60b8ff;border:none;padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer">
+      🔍 지금 재토론
+    </button>
+  </h1>
+  <div class="meta">마지막 갱신: <span id="updated-at">{{ updated_at }}</span> &nbsp;·&nbsp; <span id="live-status" style="color:#00c9a7">● LIVE</span> (SSE 실시간) &nbsp;·&nbsp; <span id="rescreen-msg" style="color:#888"></span></div>
+
+  <div class="summary">
+    <div class="card">
+      <div class="card-label">오늘 실현손익</div>
+      <div class="card-value" id="daily-pnl" style="color:{{ s.pnl_color }}">{{ '{:+,}'.format(s.daily_pnl) }}원</div>
+    </div>
+    <div class="card">
+      <div class="card-label">미실현손익</div>
+      <div class="card-value" id="unrealized-pnl" style="color:{{ s.unr_color }}">{{ '{:+,}'.format(s.unrealized_pnl) }}원</div>
+    </div>
+    <div class="card">
+      <div class="card-label">보유 포지션</div>
+      <div class="card-value" id="active-count">{{ s.active_count }}종목</div>
+    </div>
+    <div class="card">
+      <div class="card-label">오늘 청산</div>
+      <div class="card-value" id="closed-count">{{ s.closed_count }}건</div>
+    </div>
+    <div class="card">
+      <div class="card-label">감시 후보</div>
+      <div class="card-value" id="cand-count">{{ s.cand_count }}종목</div>
+    </div>
+    <div class="card">
+      <div class="card-label">예수금 총액</div>
+      <div class="card-value" id="account-cash">{{ '{:,}'.format(s.account_cash) }}원</div>
+    </div>
+    <div class="card">
+      <div class="card-label">주문가능액</div>
+      <div class="card-value" id="order-cash">{{ '{:,}'.format(s.order_cash) }}원</div>
+    </div>
+    <div class="card">
+      <div class="card-label">유가평가액</div>
+      <div class="card-value" id="eval-amt">{{ '{:,}'.format(s.eval_amt) }}원</div>
+    </div>
+    <div class="card">
+      <div class="card-label">총평가금액</div>
+      <div class="card-value" id="total-eval">{{ '{:,}'.format(s.total_eval) }}원</div>
+    </div>
+    <div class="card">
+      <div class="card-label">승률</div>
+      <div class="card-value" id="win-rate" style="color:#60b8ff">{{ '%.1f'|format(s.win_rate) }}% <small style="color:#888">({{ s.wins }}/{{ s.total_trades }})</small></div>
+    </div>
+    <div class="card">
+      <div class="card-label">총 실현손익</div>
+      <div class="card-value" id="total-realized" style="color:{{ s.total_realized_color }}">{{ '{:+,}'.format(s.total_realized) }}원</div>
+    </div>
+  </div>
+
+  <div class="strat-grid" id="strategy-cards">{{ strategy_html|safe }}</div>
+
+  <section>
+    <h2>보유 포지션</h2>
+    <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>종목</th><th>수량</th><th>매수가</th><th>현재가</th><th>수익률 / 손익</th><th>상태</th>
+        <th class="hide-mobile">목표가</th><th class="hide-mobile">손절가</th><th class="hide-mobile">트레일링</th><th></th>
+      </tr></thead>
+      <tbody id="positions-tbody">{{ positions_html|safe }}</tbody>
+    </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>감시 후보</h2>
+    <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>종목</th><th>현재가</th><th>진입구간</th><th>신뢰도</th><th>진입여부</th>
+        <th class="hide-mobile">목표가</th><th class="hide-mobile">손절가</th><th class="hide-mobile">만료</th><th></th>
+      </tr></thead>
+      <tbody id="candidates-tbody">{{ candidates_html|safe }}</tbody>
+    </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>오늘 청산 내역</h2>
+    <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>종목</th><th>매수가</th><th>매도가</th><th>수익률</th><th>손익</th><th>사유</th>
+      </tr></thead>
+      <tbody id="closed-tbody">{{ closed_html|safe }}</tbody>
+    </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>최근 14일 성과</h2>
+    <div class="panel" id="chart-panel">{{ chart_html|safe }}</div>
+  </section>
+
+  <div class="bottom-grid">
+    <div class="panel">
+      <div class="panel-title">최근 이벤트</div>
+      <div id="events-panel" style="max-height:300px;overflow-y:auto;overflow-x:hidden">{{ events_html|safe }}</div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">봇 상태</div>
+      <div id="bot-panel">{{ bot_html|safe }}</div>
+    </div>
+  </div>
+
+  <button class="fab" onclick="refreshNow()">&#x21bb;</button>
+  <div class="refresh">SSE 실시간 · <span id="fetch-count">0</span> updates</div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -48,7 +48,7 @@ class BaseAgent:
     def _parse_opinions(self, text: str) -> list[AgentOpinion]:
         """LLM 응답에서 AgentOpinion 목록 파싱."""
         data = extract_json(text)
-        if not data:
+        if data is None:
             log.warning("[%s] JSON 파싱 실패:\n%s", self.name, text[:300])
             return []
 

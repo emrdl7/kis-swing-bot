@@ -98,6 +98,11 @@ class EntryExecutor:
         qty = max(1, invest_amount // int(current_price))
         if qty <= 0:
             return None
+        # E-2: 최소 주문 금액 가드 (수수료 대비 비효율 방지)
+        order_value = qty * int(current_price)
+        if order_value < 50_000:
+            log.warning("[%s] 주문 금액 %s원 < 5만원, 진입 스킵", candidate.symbol, f"{order_value:,}")
+            return None
 
         log.info(
             "[%s] 진입 조건 충족 price=%.0f (진입대: %.0f~%.0f) qty=%d",

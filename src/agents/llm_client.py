@@ -1,4 +1,8 @@
-"""LLM 클라이언트 — claude CLI 우선, 실패 시 gemini CLI 자동 fallback."""
+"""LLM 클라이언트 — primary LLM 선택 + 교차 fallback.
+
+primary="claude" → Claude 시도 → Gemini fallback
+primary="gemini" → Gemini 시도 → Claude fallback
+"""
 from __future__ import annotations
 import logging
 import os
@@ -29,11 +33,13 @@ class LLMClient:
         max_tokens: int = 2000,
         timeout: float = DEFAULT_TIMEOUT,
         gemini_model: str = DEFAULT_GEMINI_MODEL,
+        primary: str = "claude",  # "claude" or "gemini"
     ):
         self.model = model
         self.max_tokens = max_tokens
         self.timeout = timeout
         self.gemini_model = gemini_model
+        self.primary = primary
 
     def chat(self, system: str, user: str, max_tokens: Optional[int] = None) -> str:
         """system + user 프롬프트로 단일 응답 반환."""
@@ -66,20 +72,38 @@ class LLMClient:
         return shutil.which(path_or_name) is not None
 
     def _call(self, prompt: str, system: str = "") -> str:
-        # 1차: Claude
+        if self.primary == "gemini":
+            return self._call_gemini_first(prompt, system)
+        return self._call_claude_first(prompt, system)
+
+    def _call_claude_first(self, prompt: str, system: str) -> str:
         text = self._call_claude(prompt, system)
         if text:
             return text
-        # 2차: Gemini fallback
         gbin = _gemini_bin()
         if self._bin_available(gbin):
-            log.warning("Claude 실패 → Gemini fallback 시도 (bin=%s model=%s)", gbin, self.gemini_model)
+            log.warning("Claude 실패 → Gemini fallback 시도")
             text = self._call_gemini(prompt, system)
             if text:
                 return text
             log.error("Gemini fallback 도 실패")
         else:
-            log.error("Gemini 바이너리 없음 (%s) — fallback 불가. GEMINI_BIN 환경변수 확인 필요", gbin)
+            log.error("Gemini 바이너리 없음 (%s) — fallback 불가", gbin)
+        return ""
+
+    def _call_gemini_first(self, prompt: str, system: str) -> str:
+        gbin = _gemini_bin()
+        if self._bin_available(gbin):
+            text = self._call_gemini(prompt, system)
+            if text:
+                return text
+            log.warning("Gemini 실패 → Claude fallback 시도")
+        else:
+            log.warning("Gemini 바이너리 없음 → Claude로 직접 시도")
+        text = self._call_claude(prompt, system)
+        if text:
+            return text
+        log.error("Claude fallback 도 실패")
         return ""
 
     def _call_claude(self, prompt: str, system: str) -> str:

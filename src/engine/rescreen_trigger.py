@@ -117,14 +117,30 @@ def trigger_rescreen(now: datetime | None = None, manual: bool = False) -> dict:
     LOCK_FILE.parent.mkdir(exist_ok=True)
     log_path = PROJECT_ROOT / "logs" / "morning_screen.log"
     try:
+        # GEMINI_BIN: 현재 환경에 없으면 알려진 경로에서 탐색 후 명시적 전달
+        # (launchd morning plist 환경변수가 monitor 프로세스에 미상속될 때 대비)
+        gemini_bin = os.environ.get("GEMINI_BIN", "")
+        if not gemini_bin:
+            import shutil
+            for _candidate in ("/usr/local/bin/gemini", os.path.expanduser("~/.local/bin/gemini")):
+                if os.path.isfile(_candidate) and os.access(_candidate, os.X_OK):
+                    gemini_bin = _candidate
+                    break
+            if not gemini_bin:
+                found = shutil.which("gemini")
+                if found:
+                    gemini_bin = found
+        extra_env: dict = {"PYTHONUNBUFFERED": "1",
+                           "PYTHONPATH": str(PROJECT_ROOT),
+                           "KIS_RESCREEN_MODE": "intraday"}
+        if gemini_bin:
+            extra_env["GEMINI_BIN"] = gemini_bin
         proc = subprocess.Popen(
             [str(PYTHON), str(SCRIPT)],
             stdout=open(log_path, "a"),
             stderr=subprocess.STDOUT,
             cwd=str(PROJECT_ROOT),
-            env={**os.environ, "PYTHONUNBUFFERED": "1",
-                 "PYTHONPATH": str(PROJECT_ROOT),
-                 "KIS_RESCREEN_MODE": "intraday"},
+            env={**os.environ, **extra_env},
             start_new_session=True,
         )
         LOCK_FILE.write_text(str(proc.pid))

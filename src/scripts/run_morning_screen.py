@@ -85,6 +85,14 @@ def make_price_fetcher(kis: KisClient):
                 acml_tr_pbmn = int(price_data.get("acml_tr_pbmn", 0) or 0)
                 nxt_amount_bn = acml_tr_pbmn / 1e8  # 억원 단위
 
+                # 시총/PER/PBR/업종 (get_price에서 추출)
+                hts_avls = int(price_data.get("hts_avls", 0) or 0)  # 시총(억원)
+                per = float(price_data.get("per", 0) or 0)
+                pbr = float(price_data.get("pbr", 0) or 0)
+                eps = float(price_data.get("eps", 0) or 0)
+                sector = price_data.get("bstp_kor_isnm", "")
+                acml_vol = int(price_data.get("acml_vol", 0) or 0)
+
                 result[sym] = {
                     "name": name,
                     "price": cur_px,
@@ -101,9 +109,17 @@ def make_price_fetcher(kis: KisClient):
                     "prev_close": prdy_clpr,
                     "nxt_gap_pct": chg_pct if pre_market else None,
                     "nxt_trade_amount_bn": nxt_amount_bn if pre_market else None,
+                    "market_cap_bn": hts_avls,
+                    "per": per,
+                    "pbr": pbr,
+                    "eps": eps,
+                    "sector": sector,
+                    "acml_vol": acml_vol,
+                    "acml_tr_pbmn": acml_tr_pbmn,
                 }
-                log.info("  %s 조회 [%s] %s: %s원 (%+.2f%%)",
-                         price_label, sym, name, f"{int(cur_px):,}", chg_pct)
+                log.info("  %s 조회 [%s] %s: %s원 (%+.2f%%) 시총%s억 업종=%s",
+                         price_label, sym, name, f"{int(cur_px):,}", chg_pct,
+                         f"{hts_avls:,}", sector)
             except Exception as e:
                 log.warning("가격 조회 실패 [%s]: %s", sym, e)
         return result
@@ -192,17 +208,52 @@ def main() -> None:
 
     # 5) LLM 멀티에이전트 토론 (실시간 가격 연동)
     log.info("LLM 멀티에이전트 토론 시작...")
-    llm = LLMClient(model=cfg.agents.model, max_tokens=cfg.agents.max_tokens)
+    from src.agents.risk_agent import RiskAgent
 
-    agents = [NewsAgent(llm), ThemeAgent(llm), TechnicalAgent(llm)]
+    # 에이전트별 LLM 배치: Gemini(저렴·빠름) ↔ Claude(정밀) 교차 fallback
+    llm_gemini = LLMClient(model=cfg.agents.model, max_tokens=cfg.agents.max_tokens, primary="gemini")
+    llm_claude = LLMClient(model=cfg.agents.model, max_tokens=cfg.agents.max_tokens, primary="claude")
+
+    agents = [
+        NewsAgent(llm_gemini),       # 뉴스 요약 → Gemini
+        ThemeAgent(llm_gemini),      # 테마/공시 → Gemini
+        TechnicalAgent(llm_gemini),  # 기술적 분석 → Gemini
+        RiskAgent(llm_claude),       # 리스크 반론 → Claude (정밀 판단)
+    ]
 
     engine = DebateEngine(
         agents=agents,
-        llm=llm,
+        llm=llm_claude,  # 모더레이터 → Claude
         screening_cfg=cfg.screening,
         num_rounds=cfg.agents.debate_rounds,
         price_fetcher=make_price_fetcher(kis),
     )
+
+    # 과거 성과 피드백 (최근 7일 청산 내역)
+    from src.core.models import CloseReason
+    recent_closed = [
+        SwingPosition.from_dict(d) for d in state_store.load_positions()
+        if d.get("state") == "CLOSED"
+        and d.get("close_time")
+        and d.get("close_reason") not in (None, "RECONCILE_KIS_ZERO")
+    ]
+    week_ago = datetime.now() - timedelta(days=7)
+    recent_closed = [p for p in recent_closed if p.close_time and p.close_time >= week_ago]
+    perf_lines = []
+    for p in recent_closed[-10:]:
+        pnl_pct = p.pnl_pct(p.close_price) if p.close_price else 0
+        reason = p.close_reason.value if p.close_reason else "?"
+        perf_lines.append(f"  {p.name}({p.symbol}) {pnl_pct:+.1f}% [{reason}]")
+    if perf_lines:
+        wins = len([p for p in recent_closed if p.close_price and p.close_price > p.avg_price])
+        total = len(recent_closed)
+        perf_text = (
+            f"\n최근 7일 실적 ({wins}승 {total - wins}패, 승률 {wins/total*100:.0f}%):\n"
+            + "\n".join(perf_lines)
+            + "\n→ 손절 종목과 유사한 패턴은 피하십시오."
+        )
+    else:
+        perf_text = ""
 
     context = {
         "today": today,
@@ -211,6 +262,7 @@ def main() -> None:
         "news_summary": news_text[:500],
         "budget_text": budget_text,
         "nxt_text": nxt_text,
+        "perf_text": perf_text,
     }
 
     new_candidates, transcript, reserves = engine.run(context)
@@ -226,15 +278,21 @@ def main() -> None:
     held_positions = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
     held_symbols = {p.symbol for p in held_positions if p.state.value != "CLOSED"}
     preserved = [c for c in active_candidates if c.symbol in held_symbols]
-    merged = list(preserved)
-    existing_symbols = {c.symbol for c in preserved}
-    for cand in new_candidates:
-        if cand.symbol not in existing_symbols:
-            merged.append(cand)
-            existing_symbols.add(cand.symbol)
-    dropped = len(active_candidates) - len(preserved)
-    if dropped > 0:
-        log.info("기존 묵은 후보 %d개 폐기 (신선도 우선)", dropped)
+
+    # 신규 후보가 0개면 LLM 실패 가능성 → 기존 후보를 폐기하지 않고 유지
+    if not new_candidates:
+        log.warning("신규 발굴 결과 없음 — 기존 후보 %d개 유지 (폐기 스킵)", len(active_candidates))
+        merged = list(active_candidates)
+    else:
+        merged = list(preserved)
+        existing_symbols = {c.symbol for c in preserved}
+        for cand in new_candidates:
+            if cand.symbol not in existing_symbols:
+                merged.append(cand)
+                existing_symbols.add(cand.symbol)
+        dropped = len(active_candidates) - len(preserved)
+        if dropped > 0:
+            log.info("기존 묵은 후보 %d개 폐기 (신선도 우선)", dropped)
 
     merged = merged[:cfg.screening.max_candidates]
     state_store.save_candidates([c.to_dict() for c in merged])

@@ -76,13 +76,26 @@ def _parse_date(entry) -> Optional[datetime]:
 
 
 def format_for_llm(news_items: list[dict], max_items: int = 30) -> str:
-    """LLM 프롬프트용 뉴스 텍스트."""
+    """LLM 프롬프트용 뉴스 텍스트. 최신 뉴스에 [HOT] 태그 부여."""
     if not news_items:
         return "오늘 수집된 뉴스 없음"
+    now = datetime.now()
     lines = []
     for item in news_items[:max_items]:
         pub = item.get("published_at", "")[:16]  # YYYY-MM-DDTHH:MM
-        lines.append(f"- [{pub}] {item['title']}")
+        # 시간 가중치 태그
+        tag = ""
+        try:
+            pub_dt = datetime.fromisoformat(item["published_at"]) if item.get("published_at") else None
+            if pub_dt:
+                age_h = (now - pub_dt).total_seconds() / 3600
+                if age_h <= 6:
+                    tag = "[HOT] "
+                elif age_h >= 18:
+                    tag = "[OLD] "
+        except Exception:
+            pass
+        lines.append(f"- {tag}[{pub}] {item['title']}")
         if item.get("summary"):
             lines.append(f"  {item['summary'][:100]}")
     return "\n".join(lines)

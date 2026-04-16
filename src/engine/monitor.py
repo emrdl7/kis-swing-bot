@@ -27,6 +27,24 @@ log = logging.getLogger(__name__)
 POLL_INTERVAL_SEC = 30
 
 
+def _krx_tick_floor(price: float) -> int:
+    """KRX 호가 단위에 맞춰 내림 (매도 지정가용)."""
+    p = int(price)
+    if p < 2_000:
+        return p - (p % 1)
+    if p < 5_000:
+        return p - (p % 5)
+    if p < 20_000:
+        return p - (p % 10)
+    if p < 50_000:
+        return p - (p % 50)
+    if p < 200_000:
+        return p - (p % 100)
+    if p < 500_000:
+        return p - (p % 500)
+    return p - (p % 1_000)
+
+
 class MarketMonitor:
     def __init__(self, cfg: AppConfig, dry_run: bool = False):
         self.cfg = cfg
@@ -120,7 +138,8 @@ class MarketMonitor:
             if not pos.stop_price or pos.stop_price <= 0:
                 continue
             try:
-                resp = self.kis.sell_limit(pos.symbol, pos.qty, pos.stop_price)
+                stop_px = _krx_tick_floor(pos.stop_price)
+                resp = self.kis.sell_limit(pos.symbol, pos.qty, stop_px)
                 ord_no = (resp.get("output") or {}).get("ODNO", "")
                 tracked[pos.symbol] = {
                     "order_no": ord_no, "qty": pos.qty,
@@ -161,6 +180,13 @@ class MarketMonitor:
         """WS 가격 수신 콜백. 이벤트 드리븐 청산 판단 — 블로킹 금지."""
         if price <= 0:
             return
+        try:
+            self._on_price_update_inner(symbol, price)
+        except Exception as e:
+            log.warning("[WS %s] 콜백 예외 (무시): %s", symbol, e)
+
+    def _on_price_update_inner(self, symbol: str, price: float) -> None:
+        """H-1: 실제 가격 업데이트 로직 (예외 보호 래핑됨)."""
         # 모든 WS 체결 이벤트를 즉시 파일에 반영 (로컬 I/O라 비용 미미, 진짜 실시간)
         try:
             if self.ws_client:
@@ -186,6 +212,9 @@ class MarketMonitor:
             return
         for pos in positions:
             if pos.symbol != symbol or pos.state == PositionState.CLOSED:
+                continue
+            # NXT 미체결 주문 대기 중 → 이벤트 재진입 방지
+            if pos.order_id and pos.order_id.startswith("NXT:"):
                 continue
             reason = None
             # 프리장: CB는 익절+손절, 스윙은 갭하락 손절만
@@ -218,35 +247,39 @@ class MarketMonitor:
                 return
 
     def _exit_worker_loop(self) -> None:
-        """이벤트 큐에서 청산 요청을 꺼내 순차 실행 (REST 블로킹 허용)."""
-        while self._worker_running:
-            try:
-                item = self._exit_queue.get(timeout=1)
-            except queue.Empty:
-                continue
-            try:
-                symbol, price, reason, market = item
-                # 최신 포지션 재로드 — _tick이 방금 닫았을 수도 있음
-                positions = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
-                target = next(
-                    (p for p in positions if p.symbol == symbol and p.state != PositionState.CLOSED),
-                    None,
-                )
-                if target is None:
-                    log.debug("[이벤트청산] %s 이미 CLOSED — 스킵", symbol)
+        """이벤트 큐에서 청산 요청을 꺼내 병렬 실행 (G-1)."""
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="exit") as pool:
+            while self._worker_running:
+                try:
+                    item = self._exit_queue.get(timeout=1)
+                except queue.Empty:
                     continue
-                # 실행
-                if market == "nxt":
-                    self._close_position_nxt(target, price, reason)
-                else:
-                    self._close_position(target, price, reason)
-                # 즉시 영속화 (30초 틱을 기다리지 않음)
-                state_store.save_positions([p.to_dict() for p in positions])
-            except Exception as e:
-                log.error("[이벤트청산] 처리 실패: %s", e, exc_info=True)
-            finally:
-                with self._closing_lock:
-                    self._closing_symbols.discard(symbol)
+                pool.submit(self._execute_exit_item, item)
+
+    def _execute_exit_item(self, item: tuple) -> None:
+        """개별 청산 항목 실행 (스레드풀에서 호출)."""
+        symbol = item[0]
+        try:
+            symbol, price, reason, market = item
+            positions = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
+            target = next(
+                (p for p in positions if p.symbol == symbol and p.state != PositionState.CLOSED),
+                None,
+            )
+            if target is None:
+                log.debug("[이벤트청산] %s 이미 CLOSED — 스킵", symbol)
+                return
+            if market == "nxt":
+                self._close_position_nxt(target, price, reason)
+            else:
+                self._close_position(target, price, reason)
+            state_store.save_positions([p.to_dict() for p in positions])
+        except Exception as e:
+            log.error("[이벤트청산] 처리 실패: %s", e, exc_info=True)
+        finally:
+            with self._closing_lock:
+                self._closing_symbols.discard(symbol)
 
     def _get_px(self, symbol: str) -> float:
         """WS 실시간 체결가 우선, 없거나 오래되면 REST로 fallback."""
@@ -380,6 +413,9 @@ class MarketMonitor:
             for pos in active_positions:
                 if pos.strategy != "closing_bet":
                     continue
+                # NXT 미체결 주문 대기 중 → reconcile이 처리
+                if pos.order_id and pos.order_id.startswith("NXT:"):
+                    continue
                 # 어제 진입한 종가배팅 포지션만 매도
                 if pos.entry_time.strftime("%Y-%m-%d") == today:
                     continue  # 오늘 진입 = 아직 오버나이트 아님
@@ -404,6 +440,31 @@ class MarketMonitor:
         for pos in active_positions:
             if pos.state == PositionState.CLOSED:
                 continue
+            # NXT 미체결 주문 대기 중 → 5분 후 자동 취소 + 정규장 시장가 전환
+            if pos.order_id and pos.order_id.startswith("NXT:"):
+                # E-4: NXT 주문 5분 타임아웃
+                try:
+                    parts = pos.order_id.split(":")
+                    nxt_odno = parts[1] if len(parts) >= 2 else ""
+                    # NXT 주문 시점은 프리장(08:00~09:00), 정규장 시작 5분 후(09:05)까지 대기
+                    if is_regular_market(now) and now.time() >= dtime(9, 5):
+                        qty_check = self.kis.get_holding_qty(pos.symbol)
+                        if qty_check == 0:
+                            # 이미 체결됨 → reconcile에서 처리
+                            continue
+                        # 아직 보유 중 → NXT 주문 취소 + 시장가 매도로 전환
+                        if nxt_odno:
+                            try:
+                                self.kis.cancel_order(nxt_odno)
+                                log.info("[NXT %s] 미체결 주문 취소 (5분 타임아웃) → 시장가 전환", pos.symbol)
+                            except Exception:
+                                pass
+                        pos.order_id = None  # NXT 태그 제거 → 다음 틱에서 정상 매도 처리
+                        changed = True
+                    continue
+                except Exception as e:
+                    log.warning("[NXT %s] 타임아웃 처리 오류: %s", pos.symbol, e)
+                    continue
             # 이벤트 워커가 이미 매도 진행 중이면 중복 방지
             with self._closing_lock:
                 if pos.symbol in self._closing_symbols:
@@ -423,8 +484,28 @@ class MarketMonitor:
 
                 should_exit, reason = self.pos_mgr.check_exit(pos, px, now)
                 if should_exit and reason:
-                    self._close_position(pos, px, reason)
-                    changed = True
+                    # G-3: 목표가 도달 + 2주 이상 → 절반 익절, 나머지 트레일링
+                    if reason == CloseReason.TAKE_PROFIT and pos.qty >= 2:
+                        sell_qty = pos.qty // 2
+                        remain_qty = pos.qty - sell_qty
+                        log.info("[%s] 분할 매도: %d주 중 %d주 익절, %d주 트레일링 전환",
+                                 pos.symbol, pos.qty, sell_qty, remain_qty)
+                        if not self.dry_run:
+                            try:
+                                self.kis.sell_market(pos.symbol, sell_qty)
+                            except Exception as e:
+                                log.error("[%s] 분할 매도 실패: %s — 전량 매도로 전환", pos.symbol, e)
+                                self._close_position(pos, px, reason)
+                                changed = True
+                                continue
+                        pos.qty = remain_qty
+                        pos.state = PositionState.TRAILING
+                        pos.peak_price = px
+                        pos.trailing_stop_px = px * (1.0 - self.cfg.exit.trailing_pct / 100.0)
+                        changed = True
+                    else:
+                        self._close_position(pos, px, reason)
+                        changed = True
             except Exception as e:
                 log.error("[%s] 포지션 체크 오류: %s", pos.symbol, e)
 
@@ -441,6 +522,10 @@ class MarketMonitor:
             if cash == 0 and self.cfg.trading.mock_budget > 0:
                 cash = self.cfg.trading.mock_budget
                 log.debug("잔고 API 0 → mock_budget 사용: %d원", cash)
+            # E-1: 일일 리스크 기준 자산 설정 (첫 틱에서 1회)
+            total_eval = int(output2.get("tot_evlu_amt", 0) or 0)
+            if total_eval > 0:
+                self.risk_mgr.set_capital(total_eval)
 
             # KIS 실제 잔고 vs positions.json 대사
             kis_holdings = {
@@ -461,32 +546,53 @@ class MarketMonitor:
                 if kis is None:
                     miss = self._reconcile_miss.get(pos.symbol, 0) + 1
                     self._reconcile_miss[pos.symbol] = miss
-                    if miss < 3:
+                    # H-2: NXT pending은 1틱, 일반은 2틱 후 CLOSED 처리
+                    miss_threshold = 1 if (pos.order_id and pos.order_id.startswith("NXT:")) else 2
+                    if miss < miss_threshold:
                         log.warning(
-                            "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=0주 — API 지연 가능성, 다음 틱 재확인 (miss=%d/3)",
-                            pos.symbol, pos.qty, miss,
+                            "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=0주 — API 지연 가능성, 다음 틱 재확인 (miss=%d/%d)",
+                            pos.symbol, pos.qty, miss, miss_threshold,
                         )
                     else:
-                        # 3틱 연속 KIS=0 → 실제 매도 체결가 조회해서 정확히 CLOSED 처리
+                        # miss_threshold틱 연속 KIS=0 → 실제 매도 체결가 조회해서 정확히 CLOSED 처리
                         # (수동 매도·외부 앱 매도·봇 누락 등 모든 경로 커버)
                         actual_px = pos.avg_price
                         reason = CloseReason.RECONCILE_KIS_ZERO
-                        try:
-                            execs = self.kis.get_today_executions(pos.symbol)
-                            sells = [e for e in execs if e.get("sll_buy_dvsn_cd") == "01"]
-                            if sells:
-                                total_qty = sum(int(e.get("tot_ccld_qty", 0) or 0) for e in sells)
-                                total_amt = sum(int(e.get("tot_ccld_amt", 0) or 0) for e in sells)
-                                if total_qty > 0:
-                                    avg_sell = total_amt / total_qty
-                                    actual_px = avg_sell
-                                    reason = CloseReason.MANUAL  # 봇 주문 경로가 아니면 수동으로 간주
+
+                        # NXT 미체결 대기 포지션: order_id에서 주문가·이유 복원
+                        if pos.order_id and pos.order_id.startswith("NXT:"):
+                            try:
+                                parts = pos.order_id.split(":")
+                                # 형식: NXT:{odno}:{price}:{reason}
+                                nxt_px = float(parts[2]) if len(parts) >= 3 else 0.0
+                                nxt_reason_str = parts[3] if len(parts) >= 4 else ""
+                                if nxt_px > 0:
+                                    actual_px = nxt_px
+                                    reason = CloseReason(nxt_reason_str) if nxt_reason_str else CloseReason.TAKE_PROFIT
                                     log.info(
-                                        "[%s] 체결내역에서 실제 매도가 확인: %.0f원 (총 %d주 %d원)",
-                                        pos.symbol, avg_sell, total_qty, total_amt,
+                                        "[%s] NXT 체결 확인 (order_id=%s): %.0f원 %s",
+                                        pos.symbol, pos.order_id, actual_px, reason.value,
                                     )
-                        except Exception as e:
-                            log.warning("[%s] 체결내역 조회 실패, avg_price로 fallback: %s", pos.symbol, e)
+                            except Exception as e:
+                                log.warning("[%s] NXT order_id 파싱 실패: %s", pos.symbol, e)
+                        else:
+                            try:
+                                execs = self.kis.get_today_executions(pos.symbol)
+                                sells = [e for e in execs if e.get("sll_buy_dvsn_cd") == "01"]
+                                if sells:
+                                    total_qty = sum(int(e.get("tot_ccld_qty", 0) or 0) for e in sells)
+                                    total_amt = sum(int(e.get("tot_ccld_amt", 0) or 0) for e in sells)
+                                    if total_qty > 0:
+                                        avg_sell = total_amt / total_qty
+                                        actual_px = avg_sell
+                                        reason = CloseReason.MANUAL  # 봇 주문 경로가 아니면 수동으로 간주
+                                        log.info(
+                                            "[%s] 체결내역에서 실제 매도가 확인: %.0f원 (총 %d주 %d원)",
+                                            pos.symbol, avg_sell, total_qty, total_amt,
+                                        )
+                            except Exception as e:
+                                log.warning("[%s] 체결내역 조회 실패, avg_price로 fallback: %s", pos.symbol, e)
+
                         pnl_amt = int((actual_px - pos.avg_price) * pos.qty)
                         log.error(
                             "⚠️ 잔고 불일치 [%s] positions=%d주 / KIS=0주 — %d틱 연속 → CLOSED (%s, %.0f원, PnL %+d원)",
@@ -570,7 +676,6 @@ class MarketMonitor:
             return
 
         # 오늘 이미 거래된 종목 (당일 진입 또는 당일 매도된 것) → 재진입 금지
-        # 버그 수정: 어제 진입 → 오늘 매도된 종목이 바로 재매수되는 문제 방지
         today_str = today
         traded_today: set[str] = set()
         for p in positions:
@@ -578,6 +683,16 @@ class MarketMonitor:
                 traded_today.add(p.symbol)
             if p.close_time and p.close_time.strftime("%Y-%m-%d") == today_str:
                 traded_today.add(p.symbol)
+
+        # D-3: 최근 3일 내 손절 종목 쿨다운 (같은 실수 반복 방지)
+        from datetime import timedelta as _td
+        cooldown_cutoff = now - _td(days=3)
+        stopped_recently: set[str] = set()
+        for p in positions:
+            if (p.state == PositionState.CLOSED
+                and p.close_reason == CloseReason.STOP_LOSS
+                and p.close_time and p.close_time >= cooldown_cutoff):
+                stopped_recently.add(p.symbol)
 
         active_now = [p for p in positions if p.state != PositionState.CLOSED]
         entered_symbols: set[str] = set()  # 이번 틱에서 진입한 종목
@@ -632,13 +747,27 @@ class MarketMonitor:
             state_store.save_candidates([c.to_dict() for c in remaining_candidates])
             candidates = remaining_candidates
 
-        for cand in remaining_candidates:
+        # 신뢰도(consensus_score) 높은 순으로 진입 시도
+        for cand in sorted(remaining_candidates, key=lambda c: c.consensus_score, reverse=True):
             # 당일 이미 거래된 종목은 재진입 금지
             if cand.symbol in traded_today:
+                continue
+            # D-3: 최근 3일 내 손절 종목 쿨다운
+            if cand.symbol in stopped_recently:
+                log.debug("[%s] 최근 3일 내 손절 → 재진입 쿨다운", cand.symbol)
                 continue
             px = cand_prices.get(cand.symbol, 0)
             if px <= 0:
                 continue
+            # D-2: 당일 급등(+8% 이상) 종목 추격매수 차단
+            try:
+                pd = self.kis.get_price(cand.symbol)
+                chg_pct = float(pd.get("prdy_ctrt", 0) or 0)
+                if chg_pct >= 8.0:
+                    log.warning("[%s] 당일 +%.1f%% 급등 → 추격매수 위험, 진입 보류", cand.symbol, chg_pct)
+                    continue
+            except Exception:
+                pass
             # 전략별 진입 시간 확인
             is_cb = "closing_bet" in (cand.tags or [])
             if is_cb and not is_closing_bet_entry(now, cb_cfg.entry_from_hhmm, cb_cfg.entry_to_hhmm):
@@ -694,15 +823,29 @@ class MarketMonitor:
             pos.close_time = datetime.now()
             return True
         try:
-            self.kis.sell_nxt(pos.symbol, pos.qty, price)
+            result = self.kis.sell_nxt(pos.symbol, pos.qty, price)
         except Exception as e:
             log.error("[NXT %s] 매도 주문 실패: %s — 정규장 재시도로 fallback", pos.symbol, e)
             return False
         import time as _t
-        _t.sleep(3)
-        qty_after = self.kis.get_holding_qty(pos.symbol)
+        # 최대 30초 폴링 (NXT 지정가는 체결까지 수초~수십초 소요 가능)
+        odno = (result.get("output") or {}).get("ODNO", "")
+        for _wait in (3, 5, 7, 15):
+            _t.sleep(_wait)
+            qty_after = self.kis.get_holding_qty(pos.symbol)
+            if qty_after == 0:
+                break
+        else:
+            qty_after = self.kis.get_holding_qty(pos.symbol)
         if qty_after > 0:
-            log.warning("[NXT %s] 체결 미확인 (잔여 %d주), 정규장에서 재처리 대기", pos.symbol, qty_after)
+            # 미체결 상태 — order_id에 주문번호·가격·이유를 기록해두고
+            # 정규장에서 중복 매도 시도를 막은 뒤 reconcile이 처리하도록 위임
+            tag = f"NXT:{odno}:{int(price)}:{reason.value}"
+            pos.order_id = tag
+            log.warning(
+                "[NXT %s] 체결 미확인 (잔여 %d주) — NXT 주문 대기 중 표시 (%s), 정규장 매도 스킵",
+                pos.symbol, qty_after, tag,
+            )
             return False
         pos.state = PositionState.CLOSED
         pos.close_reason = reason
@@ -737,10 +880,19 @@ class MarketMonitor:
         )
 
         if not self.dry_run:
-            try:
-                self.kis.sell_market(pos.symbol, pos.qty)
-            except Exception as e:
-                log.error("[%s] 매도 주문 실패: %s", pos.symbol, e)
+            # G-2: 매도 실패 시 30초 후 1회 재시도
+            sell_ok = False
+            for attempt in range(2):
+                try:
+                    self.kis.sell_market(pos.symbol, pos.qty)
+                    sell_ok = True
+                    break
+                except Exception as e:
+                    log.error("[%s] 매도 주문 실패 (attempt %d): %s", pos.symbol, attempt + 1, e)
+                    if attempt == 0:
+                        import time as _retry_t
+                        _retry_t.sleep(30)
+            if not sell_ok:
                 return
 
             import time as _time

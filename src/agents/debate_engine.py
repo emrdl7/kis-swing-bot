@@ -22,6 +22,7 @@ _AGENT_LABEL = {
     "news_agent":      "📰 뉴스 에이전트",
     "theme_agent":     "🏷 테마/공시 에이전트",
     "technical_agent": "📊 기술적 분석 에이전트",
+    "risk_agent":      "⚠️ 리스크 에이전트",
 }
 
 # Round 0: 종목 추천만 (가격 없음)
@@ -66,6 +67,10 @@ class DebateEngine:
         log.info("=== Round 0: 독립 종목 추천 ===")
         prelim: dict[str, list[dict]] = {}
         for agent in self.agents:
+            if agent.name == "risk_agent":
+                prelim[agent.name] = []  # R0 스킵 — R1에서 다른 추천에 대해 리스크 평가
+                log.info("  [%s] R0 스킵 (R1에서 리스크 평가)", agent.name)
+                continue
             ops = self._round0_analyze(agent, context)
             prelim[agent.name] = ops
             self._log_prelim(agent.name, ops)
@@ -77,10 +82,32 @@ class DebateEngine:
         if all_symbols and self.price_fetcher:
             log.info("KIS 실시간 가격 조회: %s", all_symbols)
             price_ctx = self.price_fetcher(all_symbols)
+
+            # A-1: 시총/거래대금 미달 종목 필터링
+            min_cap = self.screening_cfg.min_market_cap_bn
+            min_trade = self.screening_cfg.min_trade_amount
+            filtered_out = []
+            for sym in list(price_ctx.keys()):
+                d = price_ctx[sym]
+                mcap = d.get("market_cap_bn", 0)
+                tr_amt = d.get("acml_tr_pbmn", 0)
+                if mcap and mcap < min_cap:
+                    filtered_out.append(f"{d.get('name', sym)}({sym}) 시총 {mcap:,}억 < {min_cap:,}억")
+                    del price_ctx[sym]
+                elif tr_amt and tr_amt < min_trade:
+                    filtered_out.append(f"{d.get('name', sym)}({sym}) 거래대금 {tr_amt/1e8:.0f}억 < {min_trade/1e8:.0f}억")
+                    del price_ctx[sym]
+            if filtered_out:
+                log.info("시총/거래대금 미달 제외: %s", filtered_out)
+                self._log("## ⛔ 시총/거래대금 미달 제외\n" + "\n".join(f"- {f}" for f in filtered_out) + "\n")
+
             self._log("## 📈 실시간 주가 데이터\n")
             for sym, d in price_ctx.items():
+                sector_str = f"  [{d.get('sector', '')}]" if d.get("sector") else ""
+                mcap_str = f"  시총 {d.get('market_cap_bn', 0):,}억" if d.get("market_cap_bn") else ""
+                per_str = f"  PER={d.get('per', 0):.1f}" if d.get("per") else ""
                 self._log(
-                    f"**{d.get('name', sym)} ({sym})**\n"
+                    f"**{d.get('name', sym)} ({sym})**{sector_str}{mcap_str}{per_str}\n"
                     f"- 현재가: {int(d.get('price', 0)):,}원  전일대비: {d.get('chg_pct', 0):+.2f}%\n"
                     f"- MA5: {int(d.get('ma5') or 0):,}  MA20: {int(d.get('ma20') or 0):,}  "
                     f"ATR14: {int(d.get('atr14') or 0):,}  RSI14: {d.get('rsi14', '-')}\n"
@@ -101,10 +128,63 @@ class DebateEngine:
             self._log_opinions(agent.name, ops, "Round 1")
             log.info("  [%s] %d개 의견", agent.name, len(ops))
 
+        # ── R1 가격 검증: 현재가 대비 ±20% 벗어난 가격은 보정 ──────────────
+        for agent_name, ops in all_opinions.items():
+            if agent_name == "risk_agent":
+                continue
+            for op in ops:
+                cur = price_ctx.get(op.symbol, {}).get("price", 0)
+                if cur <= 0:
+                    continue
+                margin = cur * 0.20
+                clamped = False
+                if op.entry_low < cur - margin:
+                    op.entry_low = round(cur * 0.97)
+                    clamped = True
+                if op.entry_high > cur + margin:
+                    op.entry_high = round(cur * 1.03)
+                    clamped = True
+                if op.target_price > cur * 1.20:
+                    op.target_price = round(cur * 1.08)
+                    clamped = True
+                if op.stop_price < cur * 0.80:
+                    op.stop_price = round(cur * 0.96)
+                    clamped = True
+                if clamped:
+                    log.warning(
+                        "[%s] %s 가격 보정 (현재가 %d): entry=%d~%d target=%d stop=%d",
+                        agent_name, op.symbol, cur, int(op.entry_low), int(op.entry_high),
+                        int(op.target_price), int(op.stop_price),
+                    )
+
         # ── Round 2: 모더레이터 최종 결정 ────────────────────────────────
         self._log("## ▶ Round 2 — 모더레이터 최종 결정\n")
         log.info("=== Round 2: 모더레이터 결정 ===")
         debate_results = self._moderate(all_opinions, today, price_text)
+
+        # 모더레이터가 0개 반환했지만 Round 1 의견이 있으면 fallback 선정
+        # (risk_agent 의견은 매수 추천이 아니므로 제외)
+        buy_opinions = {k: v for k, v in all_opinions.items() if k != "risk_agent"}
+        has_opinions = any(ops for ops in buy_opinions.values())
+        if not debate_results and has_opinions:
+            log.warning("모더레이터 0개 반환 → Round 1 최고 conviction 종목 fallback 선정")
+            self._log("⚠️ 모더레이터 선정 없음 — conviction 최고 종목 자동 선정\n")
+            best_op = max(
+                (op for ops in buy_opinions.values() for op in ops),
+                key=lambda o: o.conviction,
+            )
+            debate_results = [DebateResult(
+                symbol=best_op.symbol,
+                name=best_op.name,
+                consensus_score=best_op.conviction * 0.5,
+                final_rationale=f"[자동선정] {best_op.rationale}",
+                entry_low=best_op.entry_low,
+                entry_high=best_op.entry_high,
+                target_price=best_op.target_price,
+                stop_price=best_op.stop_price,
+                supporting_agents=[best_op.agent_name],
+                tags=best_op.tags,
+            )]
 
         self._log("## ✅ 최종 선정 종목\n")
         for r in debate_results:
@@ -138,9 +218,12 @@ class DebateEngine:
 
         budget_text = context.get("budget_text", "")
 
+        perf_text = context.get("perf_text", "")
+
         user_msg = f"""[{today}] 오늘 뉴스와 공시를 분석하여 스윙 트레이딩 유망 종목을 추천하십시오.
 이 단계에서는 종목명과 추천 이유만 작성하고, 가격은 입력하지 마십시오.
 {budget_text}
+{perf_text}
 
 === 오늘 뉴스 ===
 {news_text[:1500]}
@@ -153,7 +236,7 @@ class DebateEngine:
 
         raw = self.llm.chat(agent.system_prompt, user_msg)
         data = extract_json(raw)
-        if not data:
+        if data is None:
             return []
         if isinstance(data, dict):
             data = [data]
@@ -181,6 +264,8 @@ class DebateEngine:
         # 전체 Round0 추천 요약
         all_prelim_text = ""
         for name, ops in prelim.items():
+            if name == "risk_agent":
+                continue  # 리스크 에이전트의 R0 경고는 별도 처리
             all_prelim_text += f"\n[{_AGENT_LABEL.get(name, name)}]\n"
             for op in ops:
                 all_prelim_text += f"  {op['name']}({op['symbol']}) conv={op['conviction']:.2f}: {op['rationale'][:80]}\n"
@@ -188,7 +273,28 @@ class DebateEngine:
         my_ops = prelim.get(agent.name, [])
         my_text = "\n".join(f"  - {op['name']}({op['symbol']}): {op['rationale'][:100]}" for op in my_ops)
 
-        user_msg = f"""아래 실시간 주가 데이터를 참고하여, 당신이 추천한 종목의 진입가/목표가/손절가를 설정하십시오.
+        # 리스크 에이전트는 다른 에이전트 추천을 평가하는 별도 프롬프트 사용
+        if agent.name == "risk_agent":
+            user_msg = f"""아래 실시간 주가 데이터와 다른 에이전트들의 추천 종목을 분석하여 리스크를 평가하십시오.
+
+=== 실시간 주가 데이터 ===
+{price_text}
+
+=== 다른 에이전트들의 추천 ===
+{all_prelim_text}
+
+각 추천 종목에 대해 매수 반대 관점에서 리스크를 분석하십시오.
+- conviction이 높을수록 해당 종목의 리스크가 크다는 의미입니다
+- conviction 0.7 이상: 강한 반대 (매수 금지 권고)
+- conviction 0.4~0.6: 주의 필요
+- conviction 0.3 이하: 큰 문제 없음
+- rationale에 구체적 리스크 사유를 명시하십시오
+- entry_low/high/target_price/stop_price는 현재가 기준으로 현실적으로 설정
+
+출력 형식 (JSON):
+{agent._opinion_json_schema()}"""
+        else:
+            user_msg = f"""아래 실시간 주가 데이터를 참고하여, 당신이 추천한 종목의 진입가/목표가/손절가를 설정하십시오.
 반드시 현재가를 기준으로 현실적인 가격을 설정하고, 현재가에서 크게 벗어난 수치는 절대 사용하지 마십시오.
 
 === 실시간 주가 데이터 ===
@@ -226,14 +332,33 @@ class DebateEngine:
         system = """당신은 한국 주식 스윙 트레이딩 전문 심판관(Moderator)입니다.
 여러 분석가의 의견을 종합하여 최종 투자 종목을 선정하십시오.
 
-선정 기준:
-1. 2인 이상 에이전트가 동의한 종목 우선
-2. 평균 conviction 0.6 이상인 종목만 선정
-3. 최대 5개 종목을 신뢰도 순으로 선정 (상위 3개는 정규 후보, 나머지는 예비 후보)
-4. 진입가/목표가/손절가는 반드시 실시간 현재가 기준으로 현실적인 값 사용
-5. 동일 섹터 종목이 많으면 가장 유망한 1개만 선택
+분석가 구성:
+- 뉴스/테마/기술적 에이전트: 매수 추천 관점
+- 리스크 에이전트(risk_agent): 매수 반대 관점 — conviction이 높을수록 해당 종목 리스크가 큼
 
-반드시 JSON 형식으로만 응답하십시오."""
+선정 기준 (우선순위):
+1. 매수 에이전트 2인 이상 동의 종목 우선 (risk_agent는 동의 카운트에서 제외)
+2. 매수 에이전트 conviction 0.6 이상 우선
+3. 리스크 에이전트의 conviction이 0.7 이상인 종목은 선정 제외 또는 consensus_score 대폭 하향
+4. 최대 5개 종목을 신뢰도 순으로 선정 (상위 3개는 정규 후보, 나머지는 예비 후보)
+5. 진입가/목표가/손절가는 반드시 실시간 현재가 기준으로 현실적인 값 사용
+6. 동일 섹터 종목이 많으면 가장 유망한 1개만 선택
+
+consensus_score 계산 가이드:
+- (매수 동의 에이전트 수 / 전체 매수 에이전트 수) × 평균 conviction
+- 리스크 에이전트 conviction 0.5 이상이면 위 점수에서 0.1~0.2 차감
+
+NXT(프리장) 데이터 활용:
+- 주가 데이터에 [NXT 갭 +X%] 표시가 있으면 프리장 갭 상승/하락 신호임
+- NXT 갭 +5% 이상: 과열 가능성 → 진입가 상향 또는 선정 제외 검토
+- NXT 갭 -1% 이하: 야간 악재 → 손절가 타이트하게 설정
+- NXT 거래대금이 크면 신뢰도 높은 신호
+
+중요: 매수 에이전트 의견이 존재하는 한 최소 1개 종목은 반드시 선정하십시오.
+2인 이상 동의 종목이 없으면 단독 추천 중 conviction이 가장 높은 종목을 consensus_score 0.5 미만으로 선정하십시오.
+에이전트 의견이 모두 비어있을 때만 빈 배열 []을 반환하십시오.
+
+반드시 JSON 배열 형식으로만 응답하십시오. JSON 외 텍스트를 포함하지 마십시오."""
 
         user_msg = f"""[{today}] 최종 종목 선정
 {self._budget_text}
@@ -265,9 +390,17 @@ class DebateEngine:
 
         raw = self.llm.chat(system, user_msg)
         data = extract_json(raw)
-        if not data:
-            log.error("모더레이터 파싱 실패:\n%s", raw[:300])
+        if data is None:
+            log.warning("모더레이터 파싱 실패 (1차) — 재시도")
+            raw = self.llm.chat(system, user_msg + "\n\n⚠️ 반드시 JSON 배열만 출력하십시오. 설명 텍스트 없이 [ ... ] 형태로만 응답.")
+            data = extract_json(raw)
+        if data is None:
+            log.error("모더레이터 파싱 실패 (2차):\n%s", raw[:300])
             self._log(f"[모더레이터 오류]\n{raw[:300]}\n")
+            return []
+        if isinstance(data, list) and len(data) == 0:
+            log.info("모더레이터 판정: 선정 종목 없음 (빈 배열 반환)")
+            self._log("[모더레이터] 선정 종목 없음\n")
             return []
         if isinstance(data, dict):
             data = [data]
@@ -376,7 +509,23 @@ def _format_price_ctx(price_ctx: dict[str, dict]) -> str:
     lines = []
     for sym, d in price_ctx.items():
         base = (
-            f"{d.get('name', sym)}({sym}): 현재가 {int(d.get('price', 0)):,}원  "
+            f"{d.get('name', sym)}({sym})"
+        )
+        # 업종·시총·PER/PBR (있으면 표시)
+        sector = d.get("sector", "")
+        mcap = d.get("market_cap_bn", 0)
+        per = d.get("per", 0)
+        pbr = d.get("pbr", 0)
+        if sector:
+            base += f"  [{sector}]"
+        if mcap:
+            base += f"  시총{mcap:,}억"
+        if per:
+            base += f"  PER={per:.1f}"
+        if pbr:
+            base += f"  PBR={pbr:.2f}"
+        base += (
+            f"\n  현재가 {int(d.get('price', 0)):,}원  "
             f"전일대비 {d.get('chg_pct', 0):+.2f}%  "
             f"MA5={int(d.get('ma5') or 0):,}  MA20={int(d.get('ma20') or 0):,}  "
             f"ATR14={int(d.get('atr14') or 0):,}  RSI={d.get('rsi14', '-')}  "
