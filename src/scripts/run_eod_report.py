@@ -198,6 +198,10 @@ def _apply_adjustments(adjustments: list[dict]) -> list[dict]:
 
 
 def main() -> None:
+    from src.core.clock import is_trading_day
+    if not is_trading_day():
+        log.info("비영업일 — 장 마감 보고 스킵")
+        return
     today = datetime.now().strftime("%Y-%m-%d")
     log.info("=== 장 마감 보고 [%s] ===", today)
 

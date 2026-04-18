@@ -135,8 +135,19 @@ class KisClient:
     def get_nxt_price(self, symbol: str) -> dict:
         """NXT(야간) 현재가 조회."""
         self.ensure_token()
-        tr_id = "FHKST01010100"  # 동일 TR, 시간대로 NXT 자동 반영
         return self.get_price(symbol)
+
+    def is_nxt_supported(self, symbol: str) -> bool:
+        """NX 마켓코드로 조회 시 실제 가격 데이터가 있으면 NXT 지원 종목."""
+        try:
+            self.ensure_token()
+            url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/quotations/inquire-price"
+            params = {"FID_COND_MRKT_DIV_CODE": "NX", "FID_INPUT_ISCD": symbol}
+            result = self._get_with_retry(url, self._headers("FHKST01010100"), params)
+            px = float((result.get("output") or {}).get("stck_prpr", 0) or 0)
+            return px > 0
+        except Exception:
+            return False
 
     def get_balance(self) -> dict:
         """계좌 잔고 조회."""

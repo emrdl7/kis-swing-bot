@@ -52,6 +52,10 @@ def _is_nxt_close(pos: SwingPosition) -> bool:
 
 
 def main() -> None:
+    from src.core.clock import is_trading_day
+    if not is_trading_day():
+        log.info("비영업일 — CB 리포트 스킵")
+        return
     today = datetime.now().strftime("%Y-%m-%d")
     log.info("=== 종가배팅 오버나이트 리포트 [%s] ===", today)
 

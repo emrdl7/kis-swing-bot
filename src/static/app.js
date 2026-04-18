@@ -31,7 +31,7 @@ function applySnapshot(snap) {
   setText('order-cash', fmtInt(s.order_cash));
   setText('eval-amt', fmtInt(s.eval_amt));
   setText('total-eval', fmtInt(s.total_eval));
-  setHTML('win-rate', s.win_rate.toFixed(1) + '% <small style="color:#888">(' + s.wins + '/' + s.total_trades + ')</small>');
+  setHTML('win-rate', s.win_rate.toFixed(1) + '% <small class="text-muted">(' + s.wins + '/' + s.total_trades + ')</small>');
   setText('total-realized', fmtSigned(s.total_realized)); setColor('total-realized', s.total_realized_color);
   setHTML('positions-tbody', snap.positions_html);
   setHTML('candidates-tbody', snap.candidates_html);
@@ -162,7 +162,7 @@ async function triggerRescreen() {
   const btn = document.getElementById('rescreen-btn');
   const msg = document.getElementById('rescreen-msg');
   if (!confirm('지금 재토론을 실행하시겠어요? LLM 비용이 발생합니다.')) return;
-  btn.disabled = true; btn.textContent = '⏳ 실행 중...';
+  btn.disabled = true; btn.innerHTML = '⏳ 실행 중...';
   msg.textContent = '';
   try {
     const res = await fetch('/api/rescreen', {method: 'POST'});
@@ -178,6 +178,9 @@ async function triggerRescreen() {
     msg.textContent = '✗ 네트워크 오류: ' + e.message;
     msg.style.color = '#ff6b6b';
   } finally {
-    setTimeout(() => { btn.disabled = false; btn.textContent = '🔍 지금 재토론'; }, 3000);
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><path d="M11 8v3l2 2"/></svg> 지금 재토론';
+    }, 3000);
   }
 }

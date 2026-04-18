@@ -95,3 +95,12 @@ def load_pre_open_orders() -> dict:
 
 def save_pre_open_orders(data: dict) -> None:
     save("pre_open_orders", data)
+
+
+def load_evening_candidates() -> dict:
+    """저녁 선분석 결과 (date, generated_at, prelim_candidates, debate_log)."""
+    return load("evening_candidates", {})
+
+
+def save_evening_candidates(data: dict) -> None:
+    save("evening_candidates", data)

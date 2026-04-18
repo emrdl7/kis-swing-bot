@@ -3,6 +3,14 @@ body { background: #0f1117; color: #e0e0e0; font-family: -apple-system, BlinkMac
 h1 { font-size: 18px; color: #fff; margin-bottom: 4px; }
 .meta { color: #666; font-size: 12px; margin-bottom: 20px; }
 
+/* 테마 적응형 텍스트 유틸리티 */
+.text-muted { color: #888; }
+.text-dim   { color: #555; }
+.stat-sub   { font-size: 10px; color: #888; margin-top: 2px; }
+body.light .text-muted { color: #999; }
+body.light .text-dim   { color: #777; }
+body.light .stat-sub   { color: #999; }
+
 .summary { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 24px; }
 @media (min-width: 480px) { .summary { grid-template-columns: repeat(3, 1fr); } }
 @media (min-width: 768px) { .summary { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; } }
@@ -26,12 +34,13 @@ tr:hover td { background: #1e2130; }
 @media (min-width: 640px) { .hide-mobile { display: table-cell; } }
 
 .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
-.entered { background: #1a3a5c; color: #60b8ff; }
+.entered { background: #1a3a5c; color: #3b82f6; }
 .trailing { background: #1a3a2a; color: #00c9a7; }
 .watching { background: #2a2a1a; color: #f9ca24; }
-.sw-badge { background: #1a2a3a; color: #60b8ff; font-size: 9px; padding: 1px 5px; }
+.sw-badge { background: #1a2a3a; color: #3b82f6; font-size: 9px; padding: 1px 5px; }
 .cb-badge { background: #2a1a3a; color: #c084fc; font-size: 9px; padding: 1px 5px; }
 .nxt-pending { background: #2a2a1a; color: #f9ca24; animation: pulse 2s infinite; }
+.nxt-badge { background: #102a1a; color: #00c9a7; font-size: 9px; padding: 1px 5px; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 
 .tooltip-wrap { position: relative; cursor: help; }
@@ -65,8 +74,12 @@ tr:hover td { background: #1e2130; }
 .btn-remove:hover { color: #ff6b6b; }
 .editable { cursor: pointer; position: relative; }
 .editable:hover { text-decoration: underline dashed #555; }
-.edit-input { width: 80px; background: #1a1d27; color: #fff; border: 1px solid #60b8ff;
+.edit-input { width: 80px; background: #1a1d27; color: #fff; border: 1px solid #3b82f6;
               border-radius: 4px; padding: 2px 6px; font-size: 12px; text-align: right; }
+
+/* 현재가 셀 */
+.cur-price { color: #fff; font-weight: bold; }
+body.light .cur-price { color: #111; }
 
 /* 라이트 테마 */
 body.light { background: #f5f6fa; color: #333; }
@@ -78,15 +91,50 @@ body.light th { color: #999; border-bottom-color: #e0e0e0; }
 body.light td { border-bottom-color: #f0f0f0; }
 body.light tr:hover td { background: #f8f9fa; }
 body.light .meta { color: #999; }
-body.light .event-msg { color: #666; }
-body.light .edit-input { background: #fff; color: #333; border-color: #60b8ff; }
+body.light .event-msg { color: #555; }
+body.light .event-time { color: #bbb; }
+body.light .event-row { border-bottom-color: #f0f0f0; }
+body.light .edit-input { background: #fff; color: #333; border-color: #3b82f6; }
+body.light .editable:hover { text-decoration: underline dashed #bbb; }
+
+/* 라이트 테마 — 배지 */
+body.light .entered { background: #dbeafe; color: #1d4ed8; }
+body.light .trailing { background: #d1fae5; color: #065f46; }
+body.light .watching { background: #fef9c3; color: #92400e; }
+body.light .sw-badge { background: #dbeafe; color: #1d4ed8; }
+body.light .cb-badge { background: #f3e8ff; color: #7c3aed; }
+body.light .nxt-pending { background: #fef9c3; color: #92400e; }
+body.light .nxt-badge { background: #d1fae5; color: #065f46; }
+
+/* 라이트 테마 — 버튼 */
+body.light .btn-sell { background: #fee2e2; color: #dc2626; border-color: #fca5a5; }
+body.light .btn-sell:hover { background: #fca5a5; }
+body.light .btn-remove { color: #bbb; }
+body.light .btn-remove:hover { color: #dc2626; }
+body.light .fab { background: #dbeafe !important; color: #1d4ed8 !important; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+body.light .btn-rescreen { background: #dbeafe !important; color: #1d4ed8 !important; }
+
+.btn-rescreen { background: #2a3a5c; color: #3b82f6; border: none; padding: 6px 12px;
+  border-radius: 6px; font-size: 12px; cursor: pointer; float: right;
+  display: inline-flex; align-items: center; gap: 5px; }
+
+/* 차트 SVG */
+.chart-zero { stroke: #444; }
+.chart-label { fill: #666; }
+body.light .chart-zero { stroke: #ccc; }
+body.light .chart-label { fill: #999; }
+
+/* 라이트 테마 — 툴팁 */
+body.light .tooltip-wrap .tooltip { background: #fff; border-color: #e0e0e0; color: #444;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.12); }
+
 .theme-toggle { background: none; border: 1px solid #333; color: #888; border-radius: 4px;
                 padding: 3px 8px; font-size: 11px; cursor: pointer; margin-left: 8px; }
-body.light .theme-toggle { border-color: #ccc; }
+body.light .theme-toggle { border-color: #ccc; color: #666; }
 
 .refresh { color: #555; font-size: 11px; margin-top: 16px; text-align: right; }
 .fab { position: fixed; bottom: 20px; right: 20px; width: 48px; height: 48px;
-        border-radius: 50%; background: #2a3a5c; color: #60b8ff; border: none;
+        border-radius: 50%; background: #2a3a5c; color: #3b82f6; border: none;
         font-size: 22px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.4);
         display: flex; align-items: center; justify-content: center; z-index: 100; }
 .fab:active { background: #3a4a6c; }

@@ -76,6 +76,7 @@ class MarketMonitor:
             dry_run=dry_run, ws_client=self.ws_client,
         )
         self._reconcile_miss: dict[str, int] = {}  # 잔고 대사 연속 0 카운터
+        self._gap_gate_done: set[str] = set()      # 시초가 갭 게이트 체크 완료된 종목
         # daily_pnl: 재시작 시에도 오늘 누적 손익 유지
         stats = state_store.load_daily_stats()
         today_str = now_kst().strftime("%Y-%m-%d")
@@ -305,8 +306,9 @@ class MarketMonitor:
         if today != self._last_date:
             self._daily_pnl = 0.0
             self._last_date = today
+            self._gap_gate_done = set()
             state_store.save_daily_stats({"date": today, "realized_pnl": 0.0, "trade_count": 0})
-            log.info("날짜 변경 → 일일 PnL 초기화")
+            log.info("날짜 변경 → 일일 PnL 초기화, 갭 게이트 리셋")
 
         cb_cfg = self.cfg.closing_bet
         in_pre_market_sell = (
@@ -314,16 +316,10 @@ class MarketMonitor:
             and is_pre_market_sell_window(now, cb_cfg.pre_market_from_hhmm, cb_cfg.pre_market_to_hhmm)
         )
 
-        # KRX 동시호가 시간(08:30~08:59)에 보유 종목별 사전 손절 지정가 등록
-        # 정규장 09:00 직후(09:00~09:01)에 미체결분 일괄 취소 — 봇 동적 로직 인계
-        if is_open_call_auction(now):
-            try:
-                positions_for_pre = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
-                active_for_pre = [p for p in positions_for_pre if p.state != PositionState.CLOSED]
-                self._ensure_pre_open_stops(active_for_pre, today)
-            except Exception as e:
-                log.error("사전 손절 등록 실패: %s", e)
-        elif is_regular_market(now) and now.time() < dtime(9, 2):
+        # 사전손절 지정가 주문 비활성화:
+        # 지정가 매도는 시초가 >= stop_price 면 체결되므로 정상 개장에도 포지션이 청산됨.
+        # 갭하락 방어 효과 없음 — WS 기반 실시간 손절로 대응.
+        if is_regular_market(now) and now.time() < dtime(9, 2):
             try:
                 self._cancel_pre_open_stops(today)
             except Exception as e:
@@ -585,10 +581,21 @@ class MarketMonitor:
                                     if total_qty > 0:
                                         avg_sell = total_amt / total_qty
                                         actual_px = avg_sell
-                                        reason = CloseReason.MANUAL  # 봇 주문 경로가 아니면 수동으로 간주
+                                        # 체결가로 청산 사유 추정
+                                        # — 손절가 근방(±2%) 또는 매수가 이하 → STOP_LOSS
+                                        # — 목표가 근방(±2%) 또는 매수가 이상 → TAKE_PROFIT
+                                        # — 그 외(외부 수동 매도) → MANUAL
+                                        near_stop = abs(avg_sell - pos.stop_price) / pos.stop_price <= 0.02
+                                        near_target = abs(avg_sell - pos.target_price) / pos.target_price <= 0.02
+                                        if near_stop or avg_sell <= pos.avg_price:
+                                            reason = CloseReason.STOP_LOSS
+                                        elif near_target or avg_sell >= pos.avg_price:
+                                            reason = CloseReason.TAKE_PROFIT
+                                        else:
+                                            reason = CloseReason.MANUAL
                                         log.info(
-                                            "[%s] 체결내역에서 실제 매도가 확인: %.0f원 (총 %d주 %d원)",
-                                            pos.symbol, avg_sell, total_qty, total_amt,
+                                            "[%s] 체결내역에서 실제 매도가 확인: %.0f원 (총 %d주 %d원) → %s",
+                                            pos.symbol, avg_sell, total_qty, total_amt, reason.value,
                                         )
                             except Exception as e:
                                 log.warning("[%s] 체결내역 조회 실패, avg_price로 fallback: %s", pos.symbol, e)
@@ -746,6 +753,41 @@ class MarketMonitor:
 
             state_store.save_candidates([c.to_dict() for c in remaining_candidates])
             candidates = remaining_candidates
+
+        # ── 가드 B: 시초가 갭 게이트 (09:05 이후, 저녁 기준가 있는 종목만) ──
+        gap_abort_pct = self.cfg.screening.open_gap_abort_pct
+        gap_aborted: set[str] = set()
+        for cand in remaining_candidates:
+            if cand.symbol in self._gap_gate_done:
+                continue
+            if not cand.ref_price_eod or cand.ref_price_eod <= 0:
+                self._gap_gate_done.add(cand.symbol)
+                continue
+            try:
+                price_data = self.kis.get_price(cand.symbol)
+                open_px = float(price_data.get("stck_oprc", 0) or 0)
+                if open_px <= 0:
+                    continue  # 시가 없으면 이번 틱 스킵 (다음 틱에서 재시도)
+                gap_pct = (open_px - cand.ref_price_eod) / cand.ref_price_eod * 100
+                self._gap_gate_done.add(cand.symbol)
+                if abs(gap_pct) >= gap_abort_pct:
+                    log.warning(
+                        "[%s] 시초가 갭 %.1f%% 이탈 (기준가 %s원 → 시가 %s원, 임계 ±%.1f%%) → 당일 진입 포기",
+                        cand.symbol, gap_pct, f"{int(cand.ref_price_eod):,}", f"{int(open_px):,}", gap_abort_pct,
+                    )
+                    gap_aborted.add(cand.symbol)
+                else:
+                    log.info(
+                        "[%s] 시초가 갭 %.1f%% — 진입 허용 (기준가 %s원 → 시가 %s원)",
+                        cand.symbol, gap_pct, f"{int(cand.ref_price_eod):,}", f"{int(open_px):,}",
+                    )
+            except Exception as e:
+                log.warning("[%s] 시초가 갭 게이트 조회 실패 (스킵): %s", cand.symbol, e)
+
+        if gap_aborted:
+            remaining_candidates = [c for c in remaining_candidates if c.symbol not in gap_aborted]
+            state_store.save_candidates([c.to_dict() for c in remaining_candidates])
+            log.info("갭 게이트 제거 %d개: %s", len(gap_aborted), gap_aborted)
 
         # 신뢰도(consensus_score) 높은 순으로 진입 시도
         for cand in sorted(remaining_candidates, key=lambda c: c.consensus_score, reverse=True):

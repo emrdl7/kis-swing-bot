@@ -453,6 +453,134 @@ NXT(프리장) 데이터 활용:
             ))
         return candidates
 
+    # ── 모더레이터 재평가 (저녁 초벌 → 아침 최종) ────────────────────────────
+
+    def moderator_reevaluate(
+        self,
+        prelim_candidates: list[SwingCandidate],
+        overnight_delta: dict,
+    ) -> list[SwingCandidate]:
+        """저녁 초벌 후보 + 밤사이 변화 → Moderator 1회로 최종 후보 확정.
+
+        - R0/R1은 실행하지 않음 (비용 절감 핵심)
+        - 초벌에 없던 종목은 절대 추가하지 않음
+        - 실패 시 prelim_candidates 전체를 그대로 반환 (폴백)
+        """
+        from src.data.overnight import format_us_market, format_nxt_prices
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        prelim_symbol_set = {c.symbol for c in prelim_candidates}
+
+        # 초벌 후보 요약
+        prelim_text = "\n".join(
+            f"- {c.name}({c.symbol}) 신뢰:{c.consensus_score:.0%} "
+            f"진입:{int(c.entry_low):,}~{int(c.entry_high):,} "
+            f"목표:{int(c.target_price):,} 손절:{int(c.stop_price):,}\n"
+            f"  근거: {c.rationale[:120]}"
+            for c in prelim_candidates
+        )
+
+        # 밤사이 변화 요약
+        us_text = format_us_market(overnight_delta.get("us_market"))
+        nxt_text = format_nxt_prices(overnight_delta.get("nxt_prices", {}), prelim_candidates)
+        news_items = overnight_delta.get("fresh_news", [])
+        news_text = "\n".join(
+            f"- {n.get('title', '')} ({n.get('published_at', '')[:16]})"
+            for n in news_items[:20]
+        ) or "조간 뉴스 없음"
+
+        system = """당신은 한국 주식 스윙 트레이딩 전문 심판관(Moderator)입니다.
+전날 저녁에 선정한 초벌 후보 종목들을 밤사이 변화를 반영하여 재평가하십시오.
+
+판정 기준:
+1. 초벌 후보 중 악재·갭다운으로 당일 진입 부적합한 종목은 제외
+2. 과도한 갭업(+5% 이상)은 consensus_score 감점 또는 제외
+3. 초벌에 없던 종목을 새로 추가하지 말 것 (유니버스 확장 금지)
+4. 미국 시장 하락(-1.5% 이상)이면 전반적 리스크 가중
+5. 선정된 종목은 기존 스키마와 동일한 형식으로 출력
+
+반드시 JSON 배열 형식으로만 응답하십시오."""
+
+        user_msg = f"""[{today}] 아침 재평가
+
+[전일 선정 초벌 후보]
+{prelim_text}
+
+[밤사이 변화]
+- 미국 시장 마감: {us_text}
+- 조간 뉴스 (06:00 이후):
+{news_text}
+- NXT 프리장 가격:
+{nxt_text}
+
+위 초벌 후보 중 당일 진입 적합한 종목만 아래 형식으로 선정하십시오.
+초벌에 없던 종목을 추가하지 마십시오.
+
+출력 형식 (JSON):
+[
+  {{
+    "symbol": "종목코드",
+    "name": "종목명",
+    "consensus_score": 0.0~1.0,
+    "final_rationale": "재평가 사유 (1-2문장)",
+    "entry_low": 진입하단가,
+    "entry_high": 진입상단가,
+    "target_price": 목표가,
+    "stop_price": 손절가,
+    "supporting_agents": ["reeval"],
+    "tags": ["태그"]
+  }}
+]"""
+
+        log.info("[재평가] Moderator 호출 (초벌 %d개)", len(prelim_candidates))
+        raw = self.llm.chat(system, user_msg)
+        data = extract_json(raw)
+        if data is None:
+            log.warning("[재평가] 파싱 실패 (1차) — 재시도")
+            raw = self.llm.chat(system, user_msg + "\n\n⚠️ 반드시 JSON 배열만 출력하십시오.")
+            data = extract_json(raw)
+        if data is None:
+            log.error("[재평가] 파싱 실패 (2차) — 초벌 전체 폴백\n%s", raw[:200])
+            return prelim_candidates
+        if isinstance(data, dict):
+            data = [data]
+
+        results = []
+        for item in data:
+            try:
+                sym = str(item["symbol"])
+                if sym not in prelim_symbol_set:
+                    log.warning("[재평가] 초벌에 없는 종목 %s 제외 (유니버스 확장 금지)", sym)
+                    continue
+                results.append(DebateResult(
+                    symbol=sym,
+                    name=str(item["name"]),
+                    consensus_score=float(item.get("consensus_score", 0.5)),
+                    final_rationale=str(item.get("final_rationale", "")),
+                    entry_low=float(item["entry_low"]),
+                    entry_high=float(item["entry_high"]),
+                    target_price=float(item["target_price"]),
+                    stop_price=float(item["stop_price"]),
+                    supporting_agents=list(item.get("supporting_agents", ["reeval"])),
+                    tags=list(item.get("tags", [])),
+                ))
+            except Exception as e:
+                log.warning("[재평가] 파싱 오류: %s | %s", e, item)
+
+        if not results:
+            log.warning("[재평가] 선정 종목 없음 — 초벌 전체 폴백")
+            return prelim_candidates
+
+        # prelim의 ref_price_eod를 재평가 결과에 이어받음
+        prelim_map = {c.symbol: c for c in prelim_candidates}
+        candidates = self._to_candidates(results)
+        for cand in candidates:
+            if cand.symbol in prelim_map:
+                cand.ref_price_eod = prelim_map[cand.symbol].ref_price_eod
+
+        log.info("[재평가] 최종 %d개 선정 (초벌 %d개 중)", len(candidates), len(prelim_candidates))
+        return candidates
+
     # ── 트랜스크립트 ────────────────────────────────────────────────────
 
     def _log(self, text: str) -> None:

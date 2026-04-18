@@ -4,14 +4,17 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <title>KIS Swing Bot</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=5">
 </head>
 <body>
   <h1>KIS Swing Bot
     <button class="theme-toggle" onclick="toggleTheme()">테마</button>
-    <button id="rescreen-btn" onclick="triggerRescreen()"
-      style="float:right;background:#2a3a5c;color:#60b8ff;border:none;padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer">
-      🔍 지금 재토론
+    <button id="rescreen-btn" class="btn-rescreen" onclick="triggerRescreen()">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        <path d="M11 8v3l2 2"/>
+      </svg>
+      지금 재토론
     </button>
   </h1>
   <div class="meta">마지막 갱신: <span id="updated-at">{{ updated_at }}</span> &nbsp;·&nbsp; <span id="live-status" style="color:#00c9a7">● LIVE</span> (SSE 실시간) &nbsp;·&nbsp; <span id="rescreen-msg" style="color:#888"></span></div>
@@ -55,7 +58,7 @@
     </div>
     <div class="card">
       <div class="card-label">승률</div>
-      <div class="card-value" id="win-rate" style="color:#60b8ff">{{ '%.1f'|format(s.win_rate) }}% <small style="color:#888">({{ s.wins }}/{{ s.total_trades }})</small></div>
+      <div class="card-value" id="win-rate" style="color:#3b82f6">{{ '%.1f'|format(s.win_rate) }}% <small class="text-muted">({{ s.wins }}/{{ s.total_trades }})</small></div>
     </div>
     <div class="card">
       <div class="card-label">총 실현손익</div>

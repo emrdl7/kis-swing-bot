@@ -25,6 +25,13 @@ log = setup("closing_bet")
 
 
 def main() -> None:
+    from src.core.clock import is_trading_day, is_next_trading_day
+    if not is_trading_day():
+        log.info("비영업일 — 종가배팅 스크리닝 스킵")
+        return
+    if not is_next_trading_day():
+        log.info("내일 비영업일 — 종가배팅 스크리닝 스킵")
+        return
     cfg = load_config()
 
     if not cfg.closing_bet.enabled:

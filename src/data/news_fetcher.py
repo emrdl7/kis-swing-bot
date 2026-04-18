@@ -19,11 +19,15 @@ DEFAULT_SOURCES = [
 def fetch_news(
     sources: list[str] | None = None,
     max_age_hours: int = 24,
+    since_dt: datetime | None = None,
 ) -> list[dict]:
-    """RSS 피드에서 뉴스 수집 후 max_age_hours 이내 기사만 반환."""
+    """RSS 피드에서 뉴스 수집 후 cutoff 이후 기사만 반환.
+
+    since_dt가 주어지면 해당 시각 이후 뉴스만 반환 (max_age_hours 무시).
+    """
     sources = sources or DEFAULT_SOURCES
     now = datetime.now()
-    cutoff = now - timedelta(hours=max_age_hours)
+    cutoff = since_dt if since_dt is not None else (now - timedelta(hours=max_age_hours))
     items: list[dict] = []
 
     for url in sources:

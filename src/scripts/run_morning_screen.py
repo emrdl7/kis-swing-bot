@@ -10,13 +10,15 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from datetime import datetime
+import os
+from datetime import datetime, timedelta
 
 from src.core.config import load_config
 from src.core import state_store
 from src.core.clock import is_pre_market
 from src.core.models import SwingCandidate, SwingPosition
 from src.data.kis_client import KisClient
+from src.data.overnight import fetch_overnight_delta
 from src.data.dart_client import DartClient
 from src.data.news_fetcher import fetch_news, format_for_llm as news_fmt
 from src.data.technical import compute_indicators
@@ -126,10 +128,122 @@ def make_price_fetcher(kis: KisClient):
     return fetch
 
 
+def _try_morning_update_mode(cfg, today: str) -> bool:
+    """저녁 선분석 파일이 있으면 Moderator 재평가만 실행. 성공 시 True 반환."""
+    # 장중 재토론(rescreen_trigger)은 풀 파이프라인 강제 (업데이트 모드 스킵)
+    if os.environ.get("KIS_RESCREEN_MODE") == "intraday":
+        log.info("[아침] 장중 재토론 모드 → 풀 파이프라인 강제")
+        return False
+
+    evening_data = state_store.load_evening_candidates()
+    if not evening_data:
+        log.info("[아침] 저녁 선분석 파일 없음 → 풀 파이프라인 모드")
+        return False
+
+    # 날짜 체크: 저녁 파일은 "전일" 날짜로 저장됨. 70시간 TTL (주말 커버)
+    generated_at_str = evening_data.get("generated_at", "")
+    if generated_at_str:
+        try:
+            generated_at = datetime.fromisoformat(generated_at_str)
+            age_hours = (datetime.now() - generated_at).total_seconds() / 3600
+            if age_hours > 70:
+                log.info("[아침] 저녁 파일 만료 (%.1fh 경과) → 풀 파이프라인 모드", age_hours)
+                return False
+            log.info("[아침] 저녁 파일 유효 (%.1fh 전 생성, 전일: %s)", age_hours, evening_data.get("date"))
+        except Exception:
+            pass
+    else:
+        # generated_at 없는 구버전 파일 — date로 폴백 비교 (저녁=전일, 아침=당일이므로 불일치 정상)
+        ev_date = evening_data.get("date", "")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        # 금요일 저녁 → 월요일 아침의 경우도 커버 (3일 이내)
+        if ev_date and ev_date < (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d"):
+            log.info("[아침] 저녁 파일 너무 오래됨 (%s) → 풀 파이프라인 모드", ev_date)
+            return False
+
+    prelim_raw = evening_data.get("prelim_candidates", [])
+    if not prelim_raw:
+        log.info("[아침] 저녁 초벌 후보 없음 → 풀 파이프라인 모드")
+        return False
+
+    try:
+        prelim_candidates = [SwingCandidate.from_dict(d) for d in prelim_raw]
+    except Exception as e:
+        log.warning("[아침] 저녁 후보 파싱 실패: %s → 풀 파이프라인 모드", e)
+        return False
+
+    log.info("[아침] 저녁 선분석 파일 확인 (%d개) → 업데이트 모드", len(prelim_candidates))
+
+    try:
+        kis = KisClient(cfg.kis)
+        prelim_symbols = [c.symbol for c in prelim_candidates]
+        delta = fetch_overnight_delta(
+            prelim_symbols=prelim_symbols,
+            kis_client=kis,
+            news_sources=cfg.news.sources or None,
+        )
+        kis.close()
+    except Exception as e:
+        log.warning("[아침] overnight delta 수집 실패: %s → 빈 delta로 계속", e)
+        delta = {}
+
+    try:
+        from src.agents.llm_client import LLMClient
+        from src.agents.debate_engine import DebateEngine
+
+        llm_claude = LLMClient(model=cfg.agents.model, max_tokens=cfg.agents.max_tokens, primary="claude")
+        engine = DebateEngine(
+            agents=[],
+            llm=llm_claude,
+            screening_cfg=cfg.screening,
+            num_rounds=0,
+        )
+        final_candidates = engine.moderator_reevaluate(prelim_candidates, delta)
+    except Exception as e:
+        log.error("[아침] Moderator 재평가 실패: %s → 풀 파이프라인 폴백", e)
+        return False
+
+    # 보유 포지션 연계 후보 보존
+    held_positions = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
+    held_symbols = {p.symbol for p in held_positions if p.state.value != "CLOSED"}
+    prelim_map = {c.symbol: c for c in prelim_candidates}
+    preserved = [prelim_map[s] for s in held_symbols if s in prelim_map]
+
+    merged = list(preserved)
+    existing_symbols = {c.symbol for c in preserved}
+    for cand in final_candidates:
+        if cand.symbol not in existing_symbols:
+            merged.append(cand)
+            existing_symbols.add(cand.symbol)
+
+    merged = merged[:cfg.screening.max_candidates]
+    state_store.save_candidates([c.to_dict() for c in merged])
+    log.info("[아침] 업데이트 모드 완료: %d개 저장 (LLM 호출 1회)", len(merged))
+    for i, c in enumerate(merged, 1):
+        log.info(
+            "  [%d] %s(%s) 진입:%s~%s 목표:%s 신뢰:%.0f%%",
+            i, c.name, c.symbol,
+            f"{int(c.entry_low):,}", f"{int(c.entry_high):,}",
+            f"{int(c.target_price):,}", c.consensus_score * 100,
+        )
+    return True
+
+
 def main() -> None:
+    from src.core.clock import is_trading_day
+    if not is_trading_day():
+        log.info("비영업일 — 종목 발굴 스킵")
+        return
     cfg = load_config()
     today = datetime.now().strftime("%Y-%m-%d")
     log.info("=== 장 전 종목 발굴 시작 [%s] ===", today)
+
+    # 저녁 선분석 파일이 있으면 업데이트 모드 (Moderator 1회만)
+    if cfg.screening.evening_prescreen_enabled and _try_morning_update_mode(cfg, today):
+        log.info("=== 아침 발굴 완료 (업데이트 모드) ===")
+        return
+
+    log.info("[아침] 풀 파이프라인 모드 (폴백)")
 
     # KIS 클라이언트 (전체 과정에서 공유)
     kis = KisClient(cfg.kis)

@@ -35,11 +35,16 @@ _cfg = load_config()
 _kis = KisClient(_cfg.kis)
 
 
+# 종목별 NXT 지원 여부 캐시 (프로세스 생애 동안 유지 — 변동 없는 정적 속성)
+_nxt_support: dict[str, bool] = {}
+
+
 def _fetch_prices(symbols: list[str]) -> dict[str, float]:
     """종목코드 → 현재가 딕셔너리. WS 실시간 캐시 우선, 미수신 종목만 REST 보강.
 
     캐시 파일은 monitor가 30초 주기로 저장하므로 신선도 기준을 60초로 잡아
     평시 REST fallback이 과하게 발생하지 않도록 한다.
+    REST 호출 시 응답의 nxt_yn 필드로 NXT 지원 여부도 함께 캐시한다.
     """
     from datetime import datetime, timedelta
     result: dict[str, float] = {}
@@ -64,6 +69,10 @@ def _fetch_prices(symbols: list[str]) -> dict[str, float]:
                 result[sym] = px
         except Exception:
             pass
+    # NXT 지원 여부: 캐시 미확인 종목만 조회 (NX 마켓코드 시도)
+    unchecked = [s for s in symbols if s not in _nxt_support]
+    for sym in unchecked:
+        _nxt_support[sym] = _kis.is_nxt_supported(sym)
     return result
 
 
@@ -89,7 +98,7 @@ def _pnl_color(pnl: float) -> str:
     if pnl > 0:
         return "#ff5555"
     if pnl < 0:
-        return "#60b8ff"
+        return "#3b82f6"
     return "#aaa"
 
 
@@ -118,7 +127,7 @@ def _reason_color(reason) -> str:
     m = {
         "TAKE_PROFIT": "#ff5555",       # 익절 = 빨강
         "TRAILING_STOP": "#ff8c42",     # 트레일링 = 주황 (수익성 청산)
-        "STOP_LOSS": "#60b8ff",         # 손절 = 파랑
+        "STOP_LOSS": "#3b82f6",         # 손절 = 파랑
         "CLOSING_BET_MORNING": "#ff5555",  # CB 매도 = 빨강
         "EOD": "#f9ca24",
         "MANUAL": "#888",
@@ -166,7 +175,7 @@ def _daily_pnl_chart(positions: list[SwingPosition], comm: float) -> str:
     bar_w, gap, h = 34, 6, 110
     mid_y = h * 0.5
     total_w = len(dates) * (bar_w + gap) + gap
-    parts = [f'<line x1="0" y1="{mid_y}" x2="{total_w}" y2="{mid_y}" stroke="#333" stroke-width="1"/>']
+    parts = [f'<line x1="0" y1="{mid_y}" x2="{total_w}" y2="{mid_y}" class="chart-zero" stroke-width="1"/>']
 
     cumul = 0
     cum_points = []
@@ -178,7 +187,7 @@ def _daily_pnl_chart(positions: list[SwingPosition], comm: float) -> str:
         if bar_h > 0.5:
             parts.append(f'<rect x="{x}" y="{y:.0f}" width="{bar_w}" height="{max(bar_h, 1):.0f}" fill="{color}" rx="2" opacity="0.8"/>')
         if i % 3 == 0 or i == 13:
-            parts.append(f'<text x="{x + bar_w / 2}" y="{h - 1}" text-anchor="middle" fill="#555" font-size="8">{d.strftime("%m/%d")}</text>')
+            parts.append(f'<text x="{x + bar_w / 2}" y="{h - 1}" text-anchor="middle" class="chart-label" font-size="8">{d.strftime("%m/%d")}</text>')
         cumul += v
         cum_points.append(f"{x + bar_w / 2},{mid_y - cumul / max_abs * (mid_y - 14):.0f}")
 
@@ -187,7 +196,7 @@ def _daily_pnl_chart(positions: list[SwingPosition], comm: float) -> str:
         parts.append(f'<polyline points="{" ".join(cum_points)}" fill="none" stroke="{cum_color}" stroke-width="1.5" opacity="0.6"/>')
 
     svg = f'<svg viewBox="0 0 {total_w} {h}" style="width:100%;max-height:120px;display:block">{"".join(parts)}</svg>'
-    legend = '<div style="font-size:10px;color:#555;margin-top:4px;text-align:right">■ 일별 손익 &nbsp; <span style="color:#c084fc">─</span> 누적</div>'
+    legend = '<div class="stat-sub" style="margin-top:4px;text-align:right">■ 일별 손익 &nbsp; <span style="color:#c084fc">─</span> 누적</div>'
     return svg + legend
 
 
@@ -205,7 +214,7 @@ def _strategy_stats_html(positions: list[SwingPosition], comm: float) -> str:
         group = [p for p in real_closed if (p.strategy or "swing") == strat]
         total = len(group)
         if total == 0:
-            cards += f'<div class="card"><div class="card-label"><span class="badge {badge_cls}">{label}</span></div><div class="card-value" style="color:#555">-</div></div>'
+            cards += f'<div class="card"><div class="card-label"><span class="badge {badge_cls}">{label}</span></div><div class="card-value text-dim">-</div></div>'
             continue
         wins = len([p for p in group if p.close_price > p.avg_price])
         wr = wins / total * 100
@@ -218,7 +227,7 @@ def _strategy_stats_html(positions: list[SwingPosition], comm: float) -> str:
         cards += (
             f'<div class="card"><div class="card-label"><span class="badge {badge_cls}">{label}</span> {total}건</div>'
             f'<div class="card-value" style="color:{pc}">{total_pnl:+,}원</div>'
-            f'<div style="font-size:10px;color:#888;margin-top:2px">승률 {wr:.0f}% · 평균 {avg_ret:+.1f}%</div></div>'
+            f'<div class="stat-sub">승률 {wr:.0f}% · 평균 {avg_ret:+.1f}%</div></div>'
         )
     return cards
 
@@ -236,7 +245,7 @@ def _bot_status_html() -> str:
     for label, log_path in services:
         full = PROJECT_ROOT / log_path
         if not full.exists():
-            rows += f'<div class="bot-row"><span class="bot-dot" style="background:#555"></span> {label} <small style="color:#555">로그 없음</small></div>'
+            rows += f'<div class="bot-row"><span class="bot-dot" style="background:#555"></span> {label} <small class="text-dim">로그 없음</small></div>'
             continue
         mtime = datetime.fromtimestamp(os.path.getmtime(full))
         age = (now_ts - mtime).total_seconds()
@@ -247,7 +256,7 @@ def _bot_status_html() -> str:
             dot, status = "#f9ca24", "유휴"
         else:
             dot, status = "#ff6b6b", "중단"
-        rows += f'<div class="bot-row"><span class="bot-dot" style="background:{dot}"></span> {label} <small style="color:#888">{status} · {time_str}</small></div>'
+        rows += f'<div class="bot-row"><span class="bot-dot" style="background:{dot}"></span> {label} <small class="text-muted">{status} · {time_str}</small></div>'
     return rows
 
 
@@ -264,7 +273,7 @@ def _recent_events_html() -> str:
         (re.compile(r"매도 전량 체결"), "체결", "#c084fc", 10),          # 체결 = 보라
         (re.compile(r"청산 reason=(\w+)\s+price=(\d+)\s+pnl=([^\s]+)"), "청산", "#c084fc", 10),
         (re.compile(r"잔고 불일치.*CLOSED"), "대사청산", "#f9ca24", 8),
-        (re.compile(r"재토론.*트리거"), "재토론", "#60b8ff", 8),
+        (re.compile(r"재토론.*트리거"), "재토론", "#3b82f6", 8),
         (re.compile(r"트레일링 스탑 활성화"), "트레일", "#ff8c42", 5),
         (re.compile(r"본전 보호 활성"), "본전보호", "#ff8c42", 7),
         (re.compile(r"모멘텀 소실"), "모멘텀소실", "#f9ca24", 7),
@@ -423,6 +432,8 @@ def _compute_snapshot() -> dict:
         cur_str = f"{int(cur_px):,}" if cur_px else "-"
         elapsed = _elapsed_str(p.entry_time)
         strat_badge = _strategy_badge(p.strategy or "swing")
+        # NXT 배지: 지원 종목이면 항상 표시
+        nxt_badge = ' <span class="badge nxt-badge">NXT</span>' if _nxt_support.get(p.symbol) else ""
         # NXT 체결 대기 상태
         nxt_tag = ""
         if p.order_id and p.order_id.startswith("NXT:"):
@@ -430,10 +441,10 @@ def _compute_snapshot() -> dict:
         state_badges = f'<span class="badge {p.state.value.lower()}">{p.state.value}</span>{nxt_tag}'
         pos_rows += f"""
         <tr>
-          <td>{strat_badge} <b>{p.name}</b><br><small style="color:#888">{p.symbol} · {elapsed}</small></td>
+          <td>{strat_badge}{nxt_badge} <b>{p.name}</b><br><small class="text-muted">{p.symbol} · {elapsed}</small></td>
           <td>{p.qty}</td>
           <td>{round(p.avg_price):,}</td>
-          <td style="color:#fff;font-weight:bold">{cur_str}</td>
+          <td class="cur-price">{cur_str}</td>
           <td style="color:{pc};font-weight:bold">{pnl_pct:+.2f}%<br>
             <small style="color:{pc}">{pnl_amt:+,}원</small></td>
           <td>{state_badges}</td>
@@ -456,12 +467,13 @@ def _compute_snapshot() -> dict:
         zone_badge = _in_zone_badge(cur_px, c.entry_low, c.entry_high) if cur_px else "-"
         # rationale 팝오버 (HTML 이스케이프)
         rationale_safe = (c.rationale or "").replace('"', '&quot;').replace('<', '&lt;')[:200]
-        tags_str = " ".join(f'<small style="color:#555">#{t}</small>' for t in (c.tags or [])[:3])
+        tags_str = " ".join(f'<small class="text-dim">#{t}</small>' for t in (c.tags or [])[:3])
+        nxt_badge = ' <span class="badge nxt-badge">NXT</span>' if _nxt_support.get(c.symbol) else ""
         cand_rows += f"""
         <tr>
-          <td class="tooltip-wrap"><b>{c.name}</b><br><small style="color:#888">{c.symbol}</small> {tags_str}
+          <td class="tooltip-wrap"><b>{c.name}</b>{nxt_badge}<br><small class="text-muted">{c.symbol}</small> {tags_str}
             <div class="tooltip">{rationale_safe}</div></td>
-          <td style="color:#fff;font-weight:bold">{cur_str}</td>
+          <td class="cur-price">{cur_str}</td>
           <td>{int(c.entry_low):,}~{int(c.entry_high):,}</td>
           <td style="color:{score_color}">{c.consensus_score:.0%}</td>
           <td>{zone_badge}</td>
@@ -496,7 +508,7 @@ def _compute_snapshot() -> dict:
         strat_badge = _strategy_badge(p.strategy or "swing")
         closed_rows += f"""
         <tr>
-          <td>{strat_badge} <b>{p.name}</b><br><small style="color:#888">{p.symbol}</small></td>
+          <td>{strat_badge} <b>{p.name}</b><br><small class="text-muted">{p.symbol}</small></td>
           <td>{round(p.avg_price):,}</td>
           <td>{int(p.close_price):,}</td>
           <td style="color:{pc};font-weight:bold">{pnl_pct:+.2f}%</td>

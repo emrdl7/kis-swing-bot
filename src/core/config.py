@@ -44,6 +44,11 @@ class ScreeningConfig(BaseModel):
     entry_zone_slack_pct: float = 1.0
     entry_expiry_days: int = 3
     drop_above_entry_pct: float = 5.0  # 진입구간 상단 대비 이 % 이상 위면 후보 제거
+    # 2단계 선분석 설정
+    evening_prescreen_enabled: bool = True
+    evening_candidate_n: int = 15        # 저녁 선분석에서 뽑을 초벌 후보 수
+    entry_cooldown_until: str = "09:05"  # HH:MM. 이 시각 이전엔 매수 금지 (정보용, clock.py와 동기화)
+    open_gap_abort_pct: float = 3.0      # 시초가 vs 저녁 기준가 절대 이탈이 이 % 이상이면 ABORT
 
 
 class AgentsConfig(BaseModel):

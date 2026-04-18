@@ -1,7 +1,24 @@
 """장 시간 판단 유틸리티."""
 from __future__ import annotations
-from datetime import datetime, time
+from datetime import datetime, time, date, timedelta
 import pytz
+
+# 한국 증시 휴장일 (주말 제외 공휴일)
+_KRX_HOLIDAYS: set[date] = {
+    # 2025
+    date(2025, 1, 1), date(2025, 1, 28), date(2025, 1, 29), date(2025, 1, 30),
+    date(2025, 3, 1), date(2025, 5, 5), date(2025, 5, 6),
+    date(2025, 6, 6), date(2025, 8, 15),
+    date(2025, 10, 3), date(2025, 10, 6), date(2025, 10, 7), date(2025, 10, 8), date(2025, 10, 9),
+    date(2025, 12, 25), date(2025, 12, 31),
+    # 2026
+    date(2026, 1, 1), date(2026, 1, 27), date(2026, 1, 28), date(2026, 1, 29), date(2026, 1, 30),
+    date(2026, 3, 1), date(2026, 3, 2),
+    date(2026, 5, 5), date(2026, 5, 25),
+    date(2026, 6, 6), date(2026, 8, 17),
+    date(2026, 9, 24), date(2026, 9, 25), date(2026, 10, 1), date(2026, 10, 2), date(2026, 10, 9),
+    date(2026, 12, 25), date(2026, 12, 31),
+}
 
 KST = pytz.timezone("Asia/Seoul")
 
@@ -29,10 +46,32 @@ def is_entry_allowed(dt: datetime | None = None) -> bool:
     return ENTRY_ALLOWED_FROM <= t <= time(15, 20)
 
 
+def is_trading_day(dt: datetime | None = None) -> bool:
+    """오늘이 거래일(영업일)인지 확인."""
+    d = (dt or now_kst()).date()
+    return d.isoweekday() <= 5 and d not in _KRX_HOLIDAYS
+
+
+def is_next_trading_day(dt: datetime | None = None) -> bool:
+    """내일이 거래일(영업일)인지 확인. 비영업일 전날 종가배팅 차단에 사용."""
+    d = (dt or now_kst()).date()
+    tomorrow = d + timedelta(days=1)
+    # 주말이거나 공휴일이면 False, 연속 확인 (예: 목→금→월)
+    checked = tomorrow
+    for _ in range(7):
+        if checked.isoweekday() <= 5 and checked not in _KRX_HOLIDAYS:
+            return checked == tomorrow  # 내일이 바로 거래일이면 True
+        checked += timedelta(days=1)
+    return False
+
+
 def is_closing_bet_entry(dt: datetime | None = None,
                          from_hhmm: int = 1520, to_hhmm: int = 1525) -> bool:
-    """종가배팅 매수 허용 시간 (기본 15:20~15:25)."""
-    t = (dt or now_kst()).time()
+    """종가배팅 매수 허용 시간 (기본 15:20~15:25). 비영업일 전날은 차단."""
+    dt = dt or now_kst()
+    if not is_next_trading_day(dt):
+        return False
+    t = dt.time()
     return hhmm_to_time(from_hhmm) <= t <= hhmm_to_time(to_hhmm)
 
 
