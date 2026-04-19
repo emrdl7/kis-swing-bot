@@ -151,7 +151,10 @@ async function removeCandidate(symbol, name) {
 }
 
 /* 에이전트 분석 모달 */
+let _modalOpenTs = 0;
+
 async function showAgentModal(symbol, name) {
+  _modalOpenTs = Date.now();
   const modal = document.getElementById('agent-modal');
   const title = document.getElementById('modal-title');
   const body  = document.getElementById('modal-body');
@@ -195,6 +198,7 @@ async function showAgentModal(symbol, name) {
 }
 
 function closeAgentModal(e) {
+  if (Date.now() - _modalOpenTs < 400) return; // 모바일 ghost click 방지
   if (e && e.target !== document.getElementById('agent-modal')) return;
   document.getElementById('agent-modal').style.display = 'none';
 }
