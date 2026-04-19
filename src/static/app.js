@@ -83,6 +83,18 @@ async function refreshNow() {
 /* SSE 시작 */
 connectSSE();
 
+/* 이벤트 위임 — 동적 HTML의 data-action 버튼 처리 */
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  const action = btn.dataset.action;
+  if (action === 'show-analysis') {
+    showAgentModal(btn.dataset.symbol, btn.dataset.name);
+  } else if (action === 'close-modal') {
+    _hideModal();
+  }
+});
+
 /* 수동 매도 */
 async function sellPosition(symbol, name, qty) {
   if (!confirm(name + ' ' + qty + '주를 시장가 매도하시겠습니까?')) return;

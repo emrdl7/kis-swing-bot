@@ -443,7 +443,7 @@ def _compute_snapshot() -> dict:
         <tr>
           <td>{strat_badge}{nxt_badge} <b>{p.name}</b><br>
             <small class="text-muted">{p.symbol} · {elapsed}</small>
-            <button class="btn-analysis btn-analysis-inline" onclick="showAgentModal('{p.symbol}','{p.name}')">분석</button></td>
+            <button class="btn-analysis btn-analysis-inline" data-action="show-analysis" data-symbol="{p.symbol}" data-name="{p.name}">분석</button></td>
           <td>{p.qty}</td>
           <td>{round(p.avg_price):,}</td>
           <td class="cur-price">{cur_str}</td>
@@ -475,7 +475,7 @@ def _compute_snapshot() -> dict:
         <tr>
           <td class="tooltip-wrap"><b>{c.name}</b>{nxt_badge}<br>
             <small class="text-muted">{c.symbol}</small> {tags_str}
-            <button class="btn-analysis btn-analysis-inline" onclick="showAgentModal('{c.symbol}','{c.name}')">분석</button>
+            <button class="btn-analysis btn-analysis-inline" data-action="show-analysis" data-symbol="{c.symbol}" data-name="{c.name}">분석</button>
             <div class="tooltip">{rationale_safe}</div></td>
           <td class="cur-price">{cur_str}</td>
           <td>{int(c.entry_low):,}~{int(c.entry_high):,}</td>
