@@ -84,15 +84,21 @@ async function refreshNow() {
 connectSSE();
 
 /* 이벤트 위임 — 동적 HTML의 data-action 버튼 처리 */
-document.addEventListener('click', function(e) {
+function _handleAction(e) {
   const btn = e.target.closest('[data-action]');
   if (!btn) return;
+  e.preventDefault();
+  e.stopPropagation();
   const action = btn.dataset.action;
   if (action === 'show-analysis') {
     showAgentModal(btn.dataset.symbol, btn.dataset.name);
   } else if (action === 'close-modal') {
     _hideModal();
   }
+}
+document.addEventListener('touchend', _handleAction, {passive: false});
+document.addEventListener('click', function(e) {
+  if (e.target.closest('[data-action]')) e.preventDefault();
 });
 
 /* 수동 매도 */
