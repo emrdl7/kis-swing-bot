@@ -178,8 +178,7 @@ async function showAgentModal(symbol, name) {
   const body  = document.getElementById('modal-body');
   title.textContent = name + ' (' + symbol + ') — 에이전트 분석';
   body.innerHTML = '<div style="color:#666;font-size:12px">불러오는 중...</div>';
-  modal.style.removeProperty('display');
-  modal.style.setProperty('display', 'flex', 'important');
+  modal.style.cssText = 'display:flex;position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;background:rgba(0,0,0,.65);align-items:center;justify-content:center;padding:16px';
   try {
     const res = await fetch('/api/candidate-detail/' + symbol);
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -217,7 +216,7 @@ async function showAgentModal(symbol, name) {
 }
 
 function _hideModal() {
-  document.getElementById('agent-modal').style.setProperty('display', 'none', 'important');
+  document.getElementById('agent-modal').style.cssText = 'display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999';
 }
 function closeAgentModal(e) {
   if (Date.now() - _modalOpenTs < 400) return;
