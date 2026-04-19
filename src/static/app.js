@@ -160,7 +160,8 @@ async function showAgentModal(symbol, name) {
   const body  = document.getElementById('modal-body');
   title.textContent = name + ' (' + symbol + ') — 에이전트 분석';
   body.innerHTML = '<div style="color:#666;font-size:12px">불러오는 중...</div>';
-  modal.style.display = 'flex';
+  modal.style.removeProperty('display');
+  modal.style.setProperty('display', 'flex', 'important');
   try {
     const res = await fetch('/api/candidate-detail/' + symbol);
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -197,14 +198,17 @@ async function showAgentModal(symbol, name) {
   }
 }
 
-function closeAgentModal(e) {
-  if (Date.now() - _modalOpenTs < 400) return; // 모바일 ghost click 방지
-  if (e && e.target !== document.getElementById('agent-modal')) return;
-  document.getElementById('agent-modal').style.display = 'none';
+function _hideModal() {
+  document.getElementById('agent-modal').style.setProperty('display', 'none', 'important');
 }
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') document.getElementById('agent-modal').style.display = 'none';
-});
+function closeAgentModal(e) {
+  if (Date.now() - _modalOpenTs < 400) return;
+  if (e && e.target !== document.getElementById('agent-modal')) return;
+  _hideModal();
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') _hideModal(); });
+// 모달 닫기 버튼용 전역 함수 (onclick 속성에서 호출)
+function closeModalBtn() { _hideModal(); }
 
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
