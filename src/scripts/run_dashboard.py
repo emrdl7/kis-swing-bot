@@ -441,7 +441,9 @@ def _compute_snapshot() -> dict:
         state_badges = f'<span class="badge {p.state.value.lower()}">{p.state.value}</span>{nxt_tag}'
         pos_rows += f"""
         <tr>
-          <td>{strat_badge}{nxt_badge} <b>{p.name}</b><br><small class="text-muted">{p.symbol} · {elapsed}</small></td>
+          <td>{strat_badge}{nxt_badge} <b>{p.name}</b><br>
+            <small class="text-muted">{p.symbol} · {elapsed}</small>
+            <button class="btn-analysis btn-analysis-inline" onclick="showAgentModal('{p.symbol}','{p.name}')">분석</button></td>
           <td>{p.qty}</td>
           <td>{round(p.avg_price):,}</td>
           <td class="cur-price">{cur_str}</td>
@@ -451,10 +453,7 @@ def _compute_snapshot() -> dict:
           <td class="hide-mobile editable" onclick="editPrice(this,'{p.symbol}','target_price',{int(p.target_price)})">{int(p.target_price):,}</td>
           <td class="hide-mobile editable" onclick="editPrice(this,'{p.symbol}','stop_price',{int(p.stop_price)})">{int(p.stop_price):,}</td>
           <td class="hide-mobile">{trail}</td>
-          <td style="white-space:nowrap">
-            <button class="btn-analysis" onclick="showAgentModal('{p.symbol}','{p.name}')">분석</button>
-            <button class="btn-sell" onclick="sellPosition('{p.symbol}','{p.name}',{p.qty})">매도</button>
-          </td>
+          <td><button class="btn-sell" onclick="sellPosition('{p.symbol}','{p.name}',{p.qty})">매도</button></td>
         </tr>"""
 
     if not pos_rows:
@@ -474,7 +473,9 @@ def _compute_snapshot() -> dict:
         nxt_badge = ' <span class="badge nxt-badge">NXT</span>' if _nxt_support.get(c.symbol) else ""
         cand_rows += f"""
         <tr>
-          <td class="tooltip-wrap"><b>{c.name}</b>{nxt_badge}<br><small class="text-muted">{c.symbol}</small> {tags_str}
+          <td class="tooltip-wrap"><b>{c.name}</b>{nxt_badge}<br>
+            <small class="text-muted">{c.symbol}</small> {tags_str}
+            <button class="btn-analysis btn-analysis-inline" onclick="showAgentModal('{c.symbol}','{c.name}')">분석</button>
             <div class="tooltip">{rationale_safe}</div></td>
           <td class="cur-price">{cur_str}</td>
           <td>{int(c.entry_low):,}~{int(c.entry_high):,}</td>
@@ -483,10 +484,7 @@ def _compute_snapshot() -> dict:
           <td class="hide-mobile">{int(c.target_price):,}</td>
           <td class="hide-mobile">{int(c.stop_price):,}</td>
           <td class="hide-mobile">{exp}</td>
-          <td style="white-space:nowrap">
-            <button class="btn-analysis" onclick="showAgentModal('{c.symbol}','{c.name}')">분석</button>
-            <button class="btn-remove" onclick="removeCandidate('{c.symbol}','{c.name}')">✕</button>
-          </td>
+          <td><button class="btn-remove" onclick="removeCandidate('{c.symbol}','{c.name}')">✕</button></td>
         </tr>"""
 
     if not cand_rows:

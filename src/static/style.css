@@ -144,6 +144,8 @@ body.light .theme-toggle { border-color: #ccc; color: #666; }
   border-radius: 4px; padding: 2px 7px; font-size: 10px; cursor: pointer; margin-right: 4px;
   touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 .btn-analysis:hover { background: #2a3a5c; }
+/* 종목명 셀 안 인라인 버튼 — 항상 첫 열에 노출 */
+.btn-analysis-inline { display: inline-block; margin-top: 3px; margin-left: 2px; }
 body.light .btn-analysis { background: #dbeafe; color: #1d4ed8; border-color: #93c5fd; }
 body.light .btn-analysis:hover { background: #bfdbfe; }
 
