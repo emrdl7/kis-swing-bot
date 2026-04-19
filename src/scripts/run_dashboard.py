@@ -451,7 +451,10 @@ def _compute_snapshot() -> dict:
           <td class="hide-mobile editable" onclick="editPrice(this,'{p.symbol}','target_price',{int(p.target_price)})">{int(p.target_price):,}</td>
           <td class="hide-mobile editable" onclick="editPrice(this,'{p.symbol}','stop_price',{int(p.stop_price)})">{int(p.stop_price):,}</td>
           <td class="hide-mobile">{trail}</td>
-          <td><button class="btn-sell" onclick="sellPosition('{p.symbol}','{p.name}',{p.qty})">매도</button></td>
+          <td style="white-space:nowrap">
+            <button class="btn-analysis" onclick="showAgentModal('{p.symbol}','{p.name}')">분석</button>
+            <button class="btn-sell" onclick="sellPosition('{p.symbol}','{p.name}',{p.qty})">매도</button>
+          </td>
         </tr>"""
 
     if not pos_rows:
@@ -663,19 +666,32 @@ def api_update_position(body: dict):
 
 @app.get("/api/candidate-detail/{symbol}")
 def api_candidate_detail(symbol: str):
-    """후보 종목 에이전트 분석 상세 조회."""
+    """후보 또는 보유 포지션의 에이전트 분석 상세 조회."""
+    # 후보 먼저 확인
     candidates = [SwingCandidate.from_dict(d) for d in state_store.load_candidates()]
     cand = next((c for c in candidates if c.symbol == symbol), None)
-    if not cand:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    return {
-        "symbol": cand.symbol,
-        "name": cand.name,
-        "consensus_score": cand.consensus_score,
-        "rationale": cand.rationale,
-        "agent_opinions": cand.agent_opinions or [],
-        "tags": cand.tags or [],
-    }
+    if cand:
+        return {
+            "symbol": cand.symbol,
+            "name": cand.name,
+            "consensus_score": cand.consensus_score,
+            "rationale": cand.rationale,
+            "agent_opinions": cand.agent_opinions or [],
+            "tags": cand.tags or [],
+        }
+    # 후보에 없으면 포지션 확인
+    positions = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
+    pos = next((p for p in positions if p.symbol == symbol and p.state != PositionState.CLOSED), None)
+    if pos:
+        return {
+            "symbol": pos.symbol,
+            "name": pos.name,
+            "consensus_score": None,
+            "rationale": pos.rationale,
+            "agent_opinions": pos.agent_opinions or [],
+            "tags": [],
+        }
+    return JSONResponse({"error": "not found"}, status_code=404)
 
 
 @app.post("/api/remove-candidate")

@@ -652,6 +652,8 @@ class MarketMonitor:
                             state=PositionState.ENTERED,
                             peak_price=kis["avg"] or 0.0,
                             strategy="closing_bet" if is_cb else "swing",
+                            rationale=getattr(cand_match, "rationale", None),
+                            agent_opinions=getattr(cand_match, "agent_opinions", None),
                         )
                         positions.append(new_pos)
                         active_positions.append(new_pos)

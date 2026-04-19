@@ -154,6 +154,8 @@ class SwingPosition:
     close_time: Optional[datetime] = None
     order_id: Optional[str] = None
     strategy: str = "swing"              # "swing" or "closing_bet"
+    rationale: Optional[str] = None      # 진입 당시 선정 근거
+    agent_opinions: Optional[list] = None  # 진입 당시 에이전트별 의견
 
     @property
     def cost_basis(self) -> float:
@@ -181,6 +183,8 @@ class SwingPosition:
             "close_time": self.close_time.isoformat() if self.close_time else None,
             "order_id": self.order_id,
             "strategy": self.strategy,
+            "rationale": self.rationale,
+            "agent_opinions": self.agent_opinions,
         }
 
     @classmethod
@@ -192,4 +196,6 @@ class SwingPosition:
             d["close_reason"] = CloseReason(d["close_reason"])
         if d.get("close_time"):
             d["close_time"] = datetime.fromisoformat(d["close_time"])
+        known = {f.name for f in cls.__dataclass_fields__.values()}
+        d = {k: v for k, v in d.items() if k in known}
         return cls(**d)

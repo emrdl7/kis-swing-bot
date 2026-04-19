@@ -164,7 +164,8 @@ async function showAgentModal(symbol, name) {
     const d = await res.json();
     let html = '';
     // 모더레이터 최종 판단
-    html += '<div class="modal-rationale"><div class="modal-rationale-label">모더레이터 판단 · 신뢰도 ' + Math.round(d.consensus_score * 100) + '%</div>' + escHtml(d.rationale || '-') + '</div>';
+    const scoreStr = d.consensus_score != null ? ' · 신뢰도 ' + Math.round(d.consensus_score * 100) + '%' : '';
+    html += '<div class="modal-rationale"><div class="modal-rationale-label">선정 근거' + scoreStr + '</div>' + escHtml(d.rationale || '-') + '</div>';
     // 에이전트 의견
     if (d.agent_opinions && d.agent_opinions.length > 0) {
       d.agent_opinions.forEach(op => {

@@ -219,5 +219,7 @@ class EntryExecutor:
             state=PositionState.ENTERED,
             peak_price=actual_price,
             strategy=strategy,
+            rationale=getattr(candidate, "rationale", None),
+            agent_opinions=getattr(candidate, "agent_opinions", None),
         )
         return pos
