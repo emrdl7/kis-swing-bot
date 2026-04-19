@@ -480,7 +480,10 @@ def _compute_snapshot() -> dict:
           <td class="hide-mobile">{int(c.target_price):,}</td>
           <td class="hide-mobile">{int(c.stop_price):,}</td>
           <td class="hide-mobile">{exp}</td>
-          <td><button class="btn-remove" onclick="removeCandidate('{c.symbol}','{c.name}')">✕</button></td>
+          <td style="white-space:nowrap">
+            <button class="btn-analysis" onclick="showAgentModal('{c.symbol}','{c.name}')">분석</button>
+            <button class="btn-remove" onclick="removeCandidate('{c.symbol}','{c.name}')">✕</button>
+          </td>
         </tr>"""
 
     if not cand_rows:
@@ -656,6 +659,23 @@ def api_update_position(body: dict):
         target.stop_price = val
     state_store.save_positions([p.to_dict() for p in positions])
     return {"ok": True, "symbol": symbol, "target_price": target.target_price, "stop_price": target.stop_price}
+
+
+@app.get("/api/candidate-detail/{symbol}")
+def api_candidate_detail(symbol: str):
+    """후보 종목 에이전트 분석 상세 조회."""
+    candidates = [SwingCandidate.from_dict(d) for d in state_store.load_candidates()]
+    cand = next((c for c in candidates if c.symbol == symbol), None)
+    if not cand:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {
+        "symbol": cand.symbol,
+        "name": cand.name,
+        "consensus_score": cand.consensus_score,
+        "rationale": cand.rationale,
+        "agent_opinions": cand.agent_opinions or [],
+        "tags": cand.tags or [],
+    }
 
 
 @app.post("/api/remove-candidate")

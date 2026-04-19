@@ -150,6 +150,61 @@ async function removeCandidate(symbol, name) {
   } catch (e) { alert('네트워크 오류: ' + e.message); }
 }
 
+/* 에이전트 분석 모달 */
+async function showAgentModal(symbol, name) {
+  const modal = document.getElementById('agent-modal');
+  const title = document.getElementById('modal-title');
+  const body  = document.getElementById('modal-body');
+  title.textContent = name + ' (' + symbol + ') — 에이전트 분석';
+  body.innerHTML = '<div style="color:#666;font-size:12px">불러오는 중...</div>';
+  modal.style.display = 'flex';
+  try {
+    const res = await fetch('/api/candidate-detail/' + symbol);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const d = await res.json();
+    let html = '';
+    // 모더레이터 최종 판단
+    html += '<div class="modal-rationale"><div class="modal-rationale-label">모더레이터 판단 · 신뢰도 ' + Math.round(d.consensus_score * 100) + '%</div>' + escHtml(d.rationale || '-') + '</div>';
+    // 에이전트 의견
+    if (d.agent_opinions && d.agent_opinions.length > 0) {
+      d.agent_opinions.forEach(op => {
+        const pct = Math.round(op.conviction * 100);
+        const barColor = op.role === 'risk' ? '#f9ca24' : '#00c9a7';
+        const roleLabel = op.role === 'risk' ? '리스크 경고' : '매수 추천';
+        const roleClass = op.role === 'risk' ? 'agent-role-risk' : 'agent-role-buy';
+        html += '<div class="agent-card">'
+          + '<div class="agent-card-header">'
+          + '<span class="agent-label">' + escHtml(op.label) + '</span>'
+          + '<span class="' + roleClass + '">' + roleLabel + '</span>'
+          + '</div>'
+          + '<div class="conviction-row">'
+          + '<div class="conviction-bar-bg"><div class="conviction-bar" style="width:' + pct + '%;background:' + barColor + '"></div></div>'
+          + '<span class="conviction-val">' + pct + '%</span>'
+          + '</div>'
+          + '<div class="agent-rationale">' + escHtml(op.rationale || '-') + '</div>'
+          + '</div>';
+      });
+    } else {
+      html += '<div style="color:#555;font-size:12px">에이전트별 상세 의견 없음<br><small>(다음 토론부터 기록됩니다)</small></div>';
+    }
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = '<div style="color:#ff6b6b;font-size:12px">불러오기 실패: ' + e.message + '</div>';
+  }
+}
+
+function closeAgentModal(e) {
+  if (e && e.target !== document.getElementById('agent-modal')) return;
+  document.getElementById('agent-modal').style.display = 'none';
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.getElementById('agent-modal').style.display = 'none';
+});
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
 /* 테마 토글 */
 function toggleTheme() {
   document.body.classList.toggle('light');

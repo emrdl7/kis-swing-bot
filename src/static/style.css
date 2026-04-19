@@ -138,3 +138,57 @@ body.light .theme-toggle { border-color: #ccc; color: #666; }
         font-size: 22px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.4);
         display: flex; align-items: center; justify-content: center; z-index: 100; }
 .fab:active { background: #3a4a6c; }
+
+/* 분석 버튼 */
+.btn-analysis { background: #1a2a3a; color: #3b82f6; border: 1px solid #2a3a5c;
+  border-radius: 4px; padding: 2px 7px; font-size: 10px; cursor: pointer; margin-right: 4px; }
+.btn-analysis:hover { background: #2a3a5c; }
+body.light .btn-analysis { background: #dbeafe; color: #1d4ed8; border-color: #93c5fd; }
+body.light .btn-analysis:hover { background: #bfdbfe; }
+
+/* 모달 */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 200;
+  display: flex; align-items: center; justify-content: center; padding: 16px; }
+.modal-box { background: #1a1d27; border-radius: 12px; width: 100%; max-width: 560px;
+  max-height: 80vh; display: flex; flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6); }
+.modal-header { display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid #2a2d3a; flex-shrink: 0; }
+.modal-header span { font-size: 14px; font-weight: 600; color: #e0e0e0; }
+.modal-close { background: none; border: none; color: #666; font-size: 18px;
+  cursor: pointer; line-height: 1; padding: 2px 4px; }
+.modal-close:hover { color: #ff6b6b; }
+.modal-body { overflow-y: auto; padding: 16px 18px; }
+
+.modal-rationale { background: #13151f; border-radius: 8px; padding: 12px 14px;
+  font-size: 12px; color: #aaa; line-height: 1.6; margin-bottom: 16px; }
+.modal-rationale-label { font-size: 10px; color: #555; text-transform: uppercase;
+  letter-spacing: 0.5px; margin-bottom: 6px; }
+
+.agent-card { border: 1px solid #2a2d3a; border-radius: 8px; padding: 12px 14px;
+  margin-bottom: 10px; }
+.agent-card-header { display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px; }
+.agent-label { font-size: 12px; font-weight: 600; color: #e0e0e0; }
+.agent-role-buy  { font-size: 10px; color: #00c9a7; background: #0a2a1a;
+  padding: 1px 6px; border-radius: 3px; }
+.agent-role-risk { font-size: 10px; color: #f9ca24; background: #2a2a0a;
+  padding: 1px 6px; border-radius: 3px; }
+.conviction-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.conviction-bar-bg { flex: 1; height: 4px; background: #2a2d3a; border-radius: 2px; }
+.conviction-bar    { height: 4px; border-radius: 2px; transition: width 0.3s; }
+.conviction-val { font-size: 11px; color: #888; min-width: 34px; text-align: right; }
+.agent-rationale { font-size: 11px; color: #aaa; line-height: 1.55; }
+
+body.light .modal-box { background: #fff; }
+body.light .modal-header { border-bottom-color: #e0e0e0; }
+body.light .modal-header span { color: #222; }
+body.light .modal-rationale { background: #f5f6fa; color: #555; }
+body.light .modal-rationale-label { color: #bbb; }
+body.light .agent-card { border-color: #e0e0e0; }
+body.light .agent-label { color: #222; }
+body.light .agent-role-buy  { background: #d1fae5; color: #065f46; }
+body.light .agent-role-risk { background: #fef9c3; color: #92400e; }
+body.light .conviction-bar-bg { background: #e0e0e0; }
+body.light .agent-rationale { color: #555; }
+body.light .conviction-val { color: #999; }

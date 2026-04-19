@@ -96,6 +96,7 @@ class SwingCandidate:
     nxt_trade_amount_bn: Optional[float] = None   # NXT 누적 거래대금 (억원)
     prev_close: Optional[float] = None            # 전일 종가 (갭 계산용)
     ref_price_eod: Optional[float] = None         # 저녁 선분석 기준가 (장마감 시점 가격)
+    agent_opinions: Optional[list] = None         # 에이전트별 분석 의견 [{agent_name, label, conviction, rationale, role}]
 
     def is_expired(self, now: Optional[datetime] = None) -> bool:
         if self.expires_at is None:
@@ -121,6 +122,7 @@ class SwingCandidate:
             "nxt_trade_amount_bn": self.nxt_trade_amount_bn,
             "prev_close": self.prev_close,
             "ref_price_eod": self.ref_price_eod,
+            "agent_opinions": self.agent_opinions,
         }
 
     @classmethod
@@ -129,6 +131,8 @@ class SwingCandidate:
         d["discovered_at"] = datetime.fromisoformat(d.get("discovered_at", datetime.now().isoformat()))
         if d.get("expires_at"):
             d["expires_at"] = datetime.fromisoformat(d["expires_at"])
+        known = {f.name for f in cls.__dataclass_fields__.values()}
+        d = {k: v for k, v in d.items() if k in known}
         return cls(**d)
 
 

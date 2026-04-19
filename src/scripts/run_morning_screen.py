@@ -118,6 +118,7 @@ def make_price_fetcher(kis: KisClient):
                     "sector": sector,
                     "acml_vol": acml_vol,
                     "acml_tr_pbmn": acml_tr_pbmn,
+                    "support_resistance": ind.get("support_resistance"),
                 }
                 log.info("  %s 조회 [%s] %s: %s원 (%+.2f%%) 시총%s억 업종=%s",
                          price_label, sym, name, f"{int(cur_px):,}", chg_pct,
