@@ -681,7 +681,7 @@ def _format_price_ctx(price_ctx: dict[str, dict]) -> str:
         nxt_amt = d.get("nxt_trade_amount_bn")
         if nxt_gap is not None:
             base += f"  [NXT 갭 {nxt_gap:+.2f}% 거래대금 {nxt_amt or 0:.1f}억]"
-        sr = d.get("support_resistance", {})
+        sr = d.get("support_resistance") or {}
         if sr.get("resistance"):
             base += f"\n  저항선: {', '.join(f'{int(r):,}원' for r in sr['resistance'][:3])}"
         if sr.get("support"):

@@ -238,6 +238,7 @@ def _try_morning_update_mode(cfg, today: str) -> bool:
             f"{int(c.entry_low):,}", f"{int(c.entry_high):,}",
             f"{int(c.target_price):,}", c.consensus_score * 100,
         )
+    apple_notes.report_morning_screen([c.to_dict() for c in merged], today)
     return True
 
 
