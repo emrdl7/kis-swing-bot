@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 from datetime import datetime, time
@@ -141,6 +142,7 @@ def trigger_rescreen(now: datetime | None = None, manual: bool = False) -> dict:
                            "KIS_RESCREEN_MODE": "intraday"}
         if gemini_bin:
             extra_env["GEMINI_BIN"] = gemini_bin
+        signal.signal(signal.SIGCHLD, signal.SIG_IGN)  # 자식 종료 시 자동 수거 (좀비 방지)
         proc = subprocess.Popen(
             [str(PYTHON), str(SCRIPT)],
             stdout=open(log_path, "a"),
