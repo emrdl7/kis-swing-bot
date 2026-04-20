@@ -153,10 +153,13 @@ class LLMClient:
         full_prompt = f"[SYSTEM]\n{system}\n\n[USER]\n{prompt}" if system else prompt
         cmd = [_gemini_bin(), "-p", full_prompt, "--model", self.gemini_model,
                "--output-format", "text"]
+        # launchd 환경에서 /usr/local/bin(node) 경로 보장
+        env = os.environ.copy()
+        env["PATH"] = "/usr/local/bin:/usr/bin:/bin:" + env.get("PATH", "")
         for attempt in range(2):
             try:
                 result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=self.timeout,
+                    cmd, capture_output=True, text=True, timeout=self.timeout, env=env,
                 )
                 if result.returncode != 0:
                     err = (result.stderr or "").strip()
