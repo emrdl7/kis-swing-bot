@@ -210,6 +210,17 @@ def _try_morning_update_mode(cfg, today: str) -> bool:
     prelim_map = {c.symbol: c for c in prelim_candidates}
     preserved = [prelim_map[s] for s in held_symbols if s in prelim_map]
 
+    # 최근 7일 청산 종목 제외
+    _week_ago = datetime.now() - timedelta(days=7)
+    recently_closed_symbols = {
+        p.symbol for p in held_positions
+        if p.state.value == "CLOSED" and p.close_time and p.close_time >= _week_ago
+    }
+    if recently_closed_symbols:
+        before = len(final_candidates)
+        final_candidates = [c for c in final_candidates if c.symbol not in recently_closed_symbols]
+        log.info("[아침] 최근청산 종목 %d개 후보 제외: %s", before - len(final_candidates), recently_closed_symbols & {c.symbol for c in prelim_candidates})
+
     merged = list(preserved)
     existing_symbols = {c.symbol for c in preserved}
     for cand in final_candidates:
@@ -393,6 +404,17 @@ def main() -> None:
     held_positions = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
     held_symbols = {p.symbol for p in held_positions if p.state.value != "CLOSED"}
     preserved = [c for c in active_candidates if c.symbol in held_symbols]
+
+    # 최근 7일 청산 종목 제외
+    _week_ago = datetime.now() - timedelta(days=7)
+    recently_closed_symbols = {
+        p.symbol for p in held_positions
+        if p.state.value == "CLOSED" and p.close_time and p.close_time >= _week_ago
+    }
+    if recently_closed_symbols:
+        before = len(new_candidates)
+        new_candidates = [c for c in new_candidates if c.symbol not in recently_closed_symbols]
+        log.info("최근청산 종목 %d개 신규 후보에서 제외: %s", before - len(new_candidates), recently_closed_symbols)
 
     # 신규 후보가 0개면 LLM 실패 가능성 → 기존 후보를 폐기하지 않고 유지
     if not new_candidates:
