@@ -56,6 +56,12 @@ def _is_locked() -> bool:
     try:
         pid = int(LOCK_FILE.read_text().strip())
         os.kill(pid, 0)
+        # 좀비(defunct) 프로세스는 kill -0에 성공하지만 실제론 종료됨
+        import subprocess as _sp
+        r = _sp.run(["ps", "-p", str(pid), "-o", "stat="], capture_output=True, text=True)
+        if "Z" in r.stdout:
+            LOCK_FILE.unlink(missing_ok=True)
+            return False
         return True
     except (OSError, ValueError):
         LOCK_FILE.unlink(missing_ok=True)
