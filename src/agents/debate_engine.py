@@ -451,9 +451,10 @@ NXT(프리장) 데이터 활용:
                                 "rationale": op.rationale,
                                 "role": "risk" if agent_name == "risk_agent" else "buy",
                             })
+            verified_name = d.get("name") or r.name
             candidates.append(SwingCandidate(
                 symbol=r.symbol,
-                name=r.name,
+                name=verified_name,
                 entry_low=r.entry_low,
                 entry_high=r.entry_high,
                 target_price=r.target_price,

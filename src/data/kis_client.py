@@ -109,6 +109,14 @@ class KisClient:
         resp.raise_for_status()
         return resp.json()
 
+    def get_stock_name(self, symbol: str) -> str:
+        """종목 한글명 조회 (search-stock-info)."""
+        self.ensure_token()
+        url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/quotations/search-stock-info"
+        out = self._get_with_retry(url, self._headers("CTPF1604R"),
+                                   {"PRDT_TYPE_CD": "300", "PDNO": symbol}).get("output", {})
+        return out.get("prdt_abrv_name") or out.get("prdt_name") or symbol
+
     def get_price(self, symbol: str) -> dict:
         """현재가 조회."""
         self.ensure_token()
