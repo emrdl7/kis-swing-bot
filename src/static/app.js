@@ -96,10 +96,13 @@ function _handleAction(e) {
     _hideModal();
   }
 }
-document.addEventListener('touchend', _handleAction, {passive: false});
-document.addEventListener('click', function(e) {
-  if (e.target.closest('[data-action]')) e.preventDefault();
-});
+document.addEventListener('touchend', function(e) {
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  e.preventDefault(); // 후속 click 이벤트 방지 (ghost click)
+  _handleAction(e);
+}, {passive: false});
+document.addEventListener('click', _handleAction);
 
 /* 수동 매도 */
 async function sellPosition(symbol, name, qty) {
