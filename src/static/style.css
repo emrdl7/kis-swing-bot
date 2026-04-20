@@ -43,12 +43,6 @@ tr:hover td { background: #1e2130; }
 .nxt-badge { background: #102a1a; color: #00c9a7; font-size: 9px; padding: 1px 5px; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 
-.tooltip-wrap { position: relative; cursor: help; }
-.tooltip-wrap .tooltip { display: none; position: absolute; left: 0; top: 100%; z-index: 50;
-  background: #1e2130; border: 1px solid #3a3d4a; border-radius: 6px; padding: 8px 10px;
-  font-size: 11px; color: #ccc; width: 260px; white-space: normal; line-height: 1.4;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
-.tooltip-wrap:hover .tooltip { display: block; }
 
 .empty-state { text-align: center; color: #666; padding: 20px 0; }
 .empty-state .sub { font-size: 11px; color: #555; margin-top: 6px; }
@@ -124,9 +118,6 @@ body.light .btn-rescreen { background: #dbeafe !important; color: #1d4ed8 !impor
 body.light .chart-zero { stroke: #ccc; }
 body.light .chart-label { fill: #999; }
 
-/* 라이트 테마 — 툴팁 */
-body.light .tooltip-wrap .tooltip { background: #fff; border-color: #e0e0e0; color: #444;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.12); }
 
 .theme-toggle { background: none; border: 1px solid #333; color: #888; border-radius: 4px;
                 padding: 3px 8px; font-size: 11px; cursor: pointer; margin-left: 8px; }

@@ -473,10 +473,9 @@ def _compute_snapshot() -> dict:
         nxt_badge = ' <span class="badge nxt-badge">NXT</span>' if _nxt_support.get(c.symbol) else ""
         cand_rows += f"""
         <tr>
-          <td class="tooltip-wrap"><b>{c.name}</b>{nxt_badge}<br>
+          <td><b>{c.name}</b>{nxt_badge}<br>
             <small class="text-muted">{c.symbol}</small> {tags_str}
-            <button class="btn-analysis btn-analysis-inline" data-action="show-analysis" data-symbol="{c.symbol}" data-name="{c.name}">분석</button>
-            <div class="tooltip">{rationale_safe}</div></td>
+            <button class="btn-analysis btn-analysis-inline" data-action="show-analysis" data-symbol="{c.symbol}" data-name="{c.name}">분석</button></td>
           <td class="cur-price">{cur_str}</td>
           <td>{int(c.entry_low):,}~{int(c.entry_high):,}</td>
           <td style="color:{score_color}">{c.consensus_score:.0%}</td>
