@@ -239,6 +239,15 @@ def _try_morning_update_mode(cfg, today: str) -> bool:
             f"{int(c.target_price):,}", c.consensus_score * 100,
         )
     apple_notes.report_morning_screen([c.to_dict() for c in merged], today)
+
+    # rescreen_state 업데이트 → monitor 자동 재토론 쿨다운 인식
+    from src.engine import rescreen_trigger as _rt
+    _st = _rt._load_state()
+    if _st.get("date") != today:
+        _st = {"date": today, "count": 0, "last_run": ""}
+    _st["last_run"] = datetime.now().isoformat()
+    _rt._save_state(_st)
+
     return True
 
 
@@ -456,6 +465,15 @@ def main() -> None:
             log.info("  [예비%d] %s(%s) 신뢰: %.0f%%", i, r.name, r.symbol, r.consensus_score * 100)
 
     apple_notes.report_morning_screen([c.to_dict() for c in merged], today)
+
+    # rescreen_state 업데이트 → monitor 자동 재토론 쿨다운 인식
+    from src.engine import rescreen_trigger as _rt
+    _st = _rt._load_state()
+    if _st.get("date") != today:
+        _st = {"date": today, "count": 0, "last_run": ""}
+    _st["last_run"] = datetime.now().isoformat()
+    _rt._save_state(_st)
+
     log.info("=== 장 전 발굴 완료 ===")
 
 
