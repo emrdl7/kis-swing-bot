@@ -82,7 +82,7 @@ def make_price_fetcher(kis: KisClient):
                 cur_px = float(price_data.get("stck_prpr", 0) or 0)
                 prdy_clpr = float(price_data.get("prdy_clpr", cur_px) or cur_px)
                 chg_pct = (cur_px / prdy_clpr - 1) * 100 if prdy_clpr else 0
-                name = price_data.get("hts_kor_isnm") or kis_client.get_stock_name(sym)
+                name = price_data.get("hts_kor_isnm") or kis.get_stock_name(sym)
                 # NXT 거래대금 (누적 거래대금 원)
                 acml_tr_pbmn = int(price_data.get("acml_tr_pbmn", 0) or 0)
                 nxt_amount_bn = acml_tr_pbmn / 1e8  # 억원 단위
