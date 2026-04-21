@@ -224,7 +224,7 @@ def _try_morning_update_mode(cfg, today: str) -> bool:
     merged = list(preserved)
     existing_symbols = {c.symbol for c in preserved}
     for cand in final_candidates:
-        if cand.symbol not in existing_symbols:
+        if cand.symbol not in existing_symbols and cand.symbol not in held_symbols:
             merged.append(cand)
             existing_symbols.add(cand.symbol)
 
@@ -425,7 +425,7 @@ def main() -> None:
         merged = list(preserved)
         existing_symbols = {c.symbol for c in preserved}
         for cand in new_candidates:
-            if cand.symbol not in existing_symbols:
+            if cand.symbol not in existing_symbols and cand.symbol not in held_symbols:
                 merged.append(cand)
                 existing_symbols.add(cand.symbol)
         dropped = len(active_candidates) - len(preserved)
