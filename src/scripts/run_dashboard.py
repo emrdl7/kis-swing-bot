@@ -620,14 +620,18 @@ def api_sell(body: dict):
     if not target:
         return JSONResponse({"ok": False, "error": f"{symbol} 보유 포지션 없음"}, status_code=404)
     try:
-        _kis.sell_market(target.symbol, target.qty)
+        from src.core.clock import is_pre_market
+        if is_pre_market():
+            # NXT 시간대: 지정가로 현재 NXT 가격에 매도
+            px_data = _kis.get_price(symbol)
+            close_px = float(px_data.get("stck_prpr", 0) or 0) or target.avg_price
+            _kis.sell_nxt(target.symbol, target.qty, close_px)
+        else:
+            _kis.sell_market(target.symbol, target.qty)
+            px_data = _kis.get_price(symbol)
+            close_px = float(px_data.get("stck_prpr", 0) or 0) or target.avg_price
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-    try:
-        px_data = _kis.get_price(symbol)
-        close_px = float(px_data.get("stck_prpr", 0) or 0) or target.avg_price
-    except Exception:
-        close_px = target.avg_price
     target.state = PositionState.CLOSED
     target.close_reason = CloseReason.MANUAL
     target.close_price = close_px
