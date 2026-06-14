@@ -7,16 +7,16 @@ import time
 from datetime import datetime, time as dtime, timedelta
 
 from src.core.config import AppConfig
-from src.core import state_store
+from src.core import event_log, state_store
 from src.core.clock import (
-    is_regular_market, is_entry_allowed, is_closing_bet_entry,
-    is_closing_bet_sell_time, is_pre_market_sell_window,
+    is_regular_market, is_entry_allowed,
     is_open_call_auction, now_kst,
 )
 from src.core.models import CloseReason, PositionState, SwingCandidate, SwingPosition
 from src.data.kis_client import KisClient
 from src.data.kis_ws_client import KisWebSocketClient
 from src.engine.entry_executor import EntryExecutor
+from src.engine.pivot_gate import evaluate_breakout, evaluate_pullback
 from src.engine.position_manager import PositionManager
 from src.engine.risk_manager import RiskManager
 from src.engine import rescreen_trigger
@@ -77,6 +77,10 @@ class MarketMonitor:
         )
         self._reconcile_miss: dict[str, int] = {}  # 잔고 대사 연속 0 카운터
         self._gap_gate_done: set[str] = set()      # 시초가 갭 게이트 체크 완료된 종목
+        # 피봇 게이트: 종목별 마지막 검사 시각 (throttle용) + OHLCV 캐시
+        self._pivot_check_at: dict[str, float] = {}
+        self._ohlcv_cache: dict[str, tuple[list, float]] = {}  # symbol → (ohlcv, fetched_at_ts)
+        self._last_pivot_diag: dict[str, dict] = {}  # 종목별 마지막 게이트 진단 (대시보드용)
         # daily_pnl: 재시작 시에도 오늘 누적 손익 유지
         stats = state_store.load_daily_stats()
         today_str = now_kst().strftime("%Y-%m-%d")
@@ -198,14 +202,9 @@ class MarketMonitor:
         with self._closing_lock:
             if symbol in self._closing_symbols:
                 return
-        # 오직 장중 또는 프리장 매도 구간에서만 반응 (야간/마감 후 스킵)
+        # 오직 정규장에서만 반응 (야간/마감 후 스킵)
         now = now_kst()
-        cb_cfg = self.cfg.closing_bet
-        in_pm = (
-            cb_cfg.enabled and cb_cfg.pre_market_sell_enabled
-            and is_pre_market_sell_window(now, cb_cfg.pre_market_from_hhmm, cb_cfg.pre_market_to_hhmm)
-        )
-        if not is_regular_market(now) and not in_pm:
+        if not is_regular_market(now):
             return
         try:
             positions = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
@@ -214,31 +213,22 @@ class MarketMonitor:
         for pos in positions:
             if pos.symbol != symbol or pos.state == PositionState.CLOSED:
                 continue
+            # manual 전략 (수동 매수) — 이벤트 청산 대상 아님
+            if (pos.strategy or "swing") == "manual":
+                continue
             # NXT 미체결 주문 대기 중 → 이벤트 재진입 방지
             if pos.order_id and pos.order_id.startswith("NXT:"):
                 continue
             reason = None
-            # 프리장: CB는 익절+손절, 스윙은 갭하락 손절만
-            if in_pm:
-                if pos.entry_time.strftime("%Y-%m-%d") == now.strftime("%Y-%m-%d"):
-                    continue
-                pnl_pct = pos.pnl_pct(price)
-                if pos.strategy == "closing_bet":
-                    if pnl_pct >= cb_cfg.pre_market_target_profit_pct:
-                        reason = (CloseReason.TAKE_PROFIT, "nxt")
-                    elif pnl_pct <= -cb_cfg.pre_market_stop_loss_pct:
-                        reason = (CloseReason.STOP_LOSS, "nxt")
-                else:
-                    swing_pre_stop = max(self.cfg.exit.stop_loss_pct, 3.0) + 0.5
-                    if pnl_pct <= -swing_pre_stop:
-                        reason = (CloseReason.STOP_LOSS, "nxt")
-            else:
-                # 정규장: 기존 PositionManager 규칙 (트레일링 갱신 포함)
-                pos2 = self.pos_mgr.update_trailing(pos, price)
-                should_exit, r = self.pos_mgr.check_exit(pos2, price, now)
-                if should_exit and r:
-                    reason = (r, "krx")
+            # 정규장: PositionManager 규칙 (트레일링 갱신 포함)
+            pos2 = self.pos_mgr.update_trailing(pos, price)
+            should_exit, r = self.pos_mgr.check_exit(pos2, price, now)
+            if should_exit and r:
+                reason = (r, "krx")
             if reason:
+                if state_store.is_sell_blocked(symbol):
+                    log.debug("[이벤트청산] %s 매도 금지 종목 — %s 차단", symbol, reason[0].value)
+                    return
                 with self._closing_lock:
                     if symbol in self._closing_symbols:
                         return
@@ -299,6 +289,142 @@ class MarketMonitor:
         self.ws_client.sync_price_subs(symbols)
         state_store.save_realtime_prices(self.ws_client.snapshot_prices())
 
+    def _cached_ohlcv(self, symbol: str, now: datetime, ttl_min: int = 60) -> list[dict]:
+        """일봉 데이터 캐싱 — 장중 일봉은 변하지 않으므로 1시간 TTL이면 충분."""
+        ts_now = now.timestamp()
+        cached = self._ohlcv_cache.get(symbol)
+        if cached:
+            ohlcv, fetched_at = cached
+            if (ts_now - fetched_at) < ttl_min * 60:
+                return ohlcv
+        ohlcv = self.kis.get_daily_ohlcv(symbol, count=100)
+        self._ohlcv_cache[symbol] = (ohlcv, ts_now)
+        return ohlcv
+
+    def _evaluate_watchlist_pivots(
+        self,
+        now: datetime,
+        candidates: list,
+        held_symbols: set[str],
+        traded_today: set[str],
+        stopped_recently: set[str],
+    ) -> list:
+        """watchlist 종목에 피봇 게이트 적용 → 통과 시 candidates에 즉시 추가."""
+        pg_cfg = self.cfg.pivot_gate
+        if not pg_cfg.enabled:
+            return candidates
+
+        try:
+            watchlist = [SwingCandidate.from_dict(d) for d in state_store.load_watchlist()]
+        except Exception as e:
+            log.debug("watchlist 로드 실패: %s", e)
+            return candidates
+        if not watchlist:
+            return candidates
+
+        cand_symbols = {c.symbol for c in candidates}
+        ts_now = now.timestamp()
+        promoted: list = []
+
+        for w in watchlist:
+            if w.is_expired(now):
+                continue
+            if w.symbol in cand_symbols or w.symbol in held_symbols:
+                continue
+            if w.symbol in traded_today or w.symbol in stopped_recently:
+                continue
+
+            # throttle: 마지막 검사 후 check_interval_sec 미만이면 skip
+            last = self._pivot_check_at.get(w.symbol, 0.0)
+            if (ts_now - last) < pg_cfg.check_interval_sec:
+                continue
+            self._pivot_check_at[w.symbol] = ts_now
+
+            try:
+                cur = self._get_px(w.symbol)
+                if cur <= 0:
+                    continue
+                pd = self.kis.get_price(w.symbol)
+                cur_vol = int(pd.get("acml_vol", 0) or 0)
+                cur_amt = int(pd.get("acml_tr_pbmn", 0) or 0)
+                ohlcv = self._cached_ohlcv(w.symbol, now)
+            except Exception as e:
+                log.debug("[피봇] %s 데이터 수집 실패: %s", w.symbol, e)
+                continue
+
+            if pg_cfg.mode == "pullback":
+                result = evaluate_pullback(
+                    ohlcv, cur, cur_vol,
+                    entry_low=w.entry_low, entry_high=w.entry_high,
+                    current_trade_amount=cur_amt,
+                    bounce_pct_min=pg_cfg.bounce_pct_min,
+                    bounce_lookback=pg_cfg.bounce_lookback,
+                    vol_ratio_min=pg_cfg.pullback_vol_ratio_min,
+                    min_trade_amount_bn=pg_cfg.min_trade_amount_bn,
+                    require_ma_uptrend=pg_cfg.require_ma_uptrend,
+                    entry_zone_slack_pct=pg_cfg.entry_zone_slack_pct,
+                )
+            else:
+                result = evaluate_breakout(
+                    ohlcv, cur, cur_vol, cur_amt,
+                    box_lookback=pg_cfg.box_lookback,
+                    breakout_pct_min=pg_cfg.breakout_pct_min,
+                    breakout_pct_max=pg_cfg.breakout_pct_max,
+                    vol_ratio_min=pg_cfg.breakout_vol_ratio_min,
+                    min_trade_amount_bn=pg_cfg.min_trade_amount_bn,
+                    require_ma_uptrend=pg_cfg.require_ma_uptrend,
+                )
+            self._last_pivot_diag[w.symbol] = {
+                **result.to_dict(),
+                "checked_at": now.isoformat(timespec="seconds"),
+                "current_price": int(cur),
+            }
+            event_log.append_event("pivot_evaluated", {
+                "symbol": w.symbol,
+                "name": w.name,
+                "strategy": "watchlist",
+                "passed": result.passed,
+                "reason": result.reason,
+                "current_price": int(cur),
+                "entry_low": int(w.entry_low),
+                "entry_high": int(w.entry_high),
+                "consensus_score": round(w.consensus_score or 0, 3),
+                "pivot": result.to_dict(),
+            })
+            if result.passed:
+                log.info("[피봇] ✅ %s(%s): %s", w.name, w.symbol, result.reason)
+                promoted.append(w)
+            else:
+                log.info("[피봇] ❌ %s(%s): %s", w.name, w.symbol, result.reason)
+
+        # 검사 결과는 통과/실패 모두 저장 (대시보드 진단용)
+        if self._last_pivot_diag:
+            try:
+                state_store.save("pivot_diag", self._last_pivot_diag)
+            except Exception:
+                pass
+
+        if promoted:
+            log.info(
+                "[피봇] watchlist → candidates 승격 %d종목: %s",
+                len(promoted), [f"{c.name}({c.symbol})" for c in promoted],
+            )
+            for c in promoted:
+                event_log.append_event("candidate_promoted", {
+                    "symbol": c.symbol,
+                    "name": c.name,
+                    "source": "pivot_gate",
+                    "entry_low": int(c.entry_low),
+                    "entry_high": int(c.entry_high),
+                    "target_price": int(c.target_price),
+                    "stop_price": int(c.stop_price),
+                    "consensus_score": round(c.consensus_score or 0, 3),
+                    "tags": c.tags,
+                })
+            candidates = list(candidates) + promoted
+            state_store.save_candidates([c.to_dict() for c in candidates])
+        return candidates
+
     def _tick(self) -> None:
         now = now_kst()
         today = now.strftime("%Y-%m-%d")
@@ -310,12 +436,6 @@ class MarketMonitor:
             state_store.save_daily_stats({"date": today, "realized_pnl": 0.0, "trade_count": 0})
             log.info("날짜 변경 → 일일 PnL 초기화, 갭 게이트 리셋")
 
-        cb_cfg = self.cfg.closing_bet
-        in_pre_market_sell = (
-            cb_cfg.enabled and cb_cfg.pre_market_sell_enabled
-            and is_pre_market_sell_window(now, cb_cfg.pre_market_from_hhmm, cb_cfg.pre_market_to_hhmm)
-        )
-
         # 사전손절 지정가 주문 비활성화:
         # 지정가 매도는 시초가 >= stop_price 면 체결되므로 정상 개장에도 포지션이 청산됨.
         # 갭하락 방어 효과 없음 — WS 기반 실시간 손절로 대응.
@@ -324,9 +444,8 @@ class MarketMonitor:
                 self._cancel_pre_open_stops(today)
             except Exception as e:
                 log.error("사전 손절 취소 실패: %s", e)
-        # 장·프리장 외 시간에도 WS 구독 동기화 + 가격 스냅샷 저장은 수행
-        # (대시보드가 NXT 프리장/시간외 가격을 보려면 캐시가 살아있어야 함)
-        if not is_regular_market(now) and not in_pre_market_sell:
+        # 장 외 시간: WS 구독 동기화만 수행 (대시보드가 가격 캐시 참조)
+        if not is_regular_market(now):
             try:
                 positions = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
                 candidates = [SwingCandidate.from_dict(d) for d in state_store.load_candidates()]
@@ -348,42 +467,6 @@ class MarketMonitor:
 
         changed = False
 
-        # ── 프리장(NXT) 매도 (CB: 익절+손절, 스윙: 갭하락 손절만) ──
-        if in_pre_market_sell:
-            for pos in active_positions:
-                if pos.entry_time.strftime("%Y-%m-%d") == today:
-                    continue  # 당일 진입분은 다음날이 아님
-                try:
-                    px = self._get_px(pos.symbol)
-                    if px <= 0:
-                        continue
-                    pnl_pct = pos.pnl_pct(px)
-                    is_cb = (pos.strategy == "closing_bet")
-                    if is_cb:
-                        # CB: 익절 + 손절 양방향
-                        if pnl_pct >= cb_cfg.pre_market_target_profit_pct:
-                            log.info("[NXT-CB] %s 프리장 갭상승 익절 pnl=%.2f%%", pos.symbol, pnl_pct)
-                            if self._close_position_nxt(pos, px, CloseReason.TAKE_PROFIT):
-                                changed = True
-                        elif pnl_pct <= -cb_cfg.pre_market_stop_loss_pct:
-                            log.info("[NXT-CB] %s 프리장 갭하락 손절 pnl=%.2f%%", pos.symbol, pnl_pct)
-                            if self._close_position_nxt(pos, px, CloseReason.STOP_LOSS):
-                                changed = True
-                    else:
-                        # 스윙: 갭하락 방어만 (추세 초입 조기 익절 방지)
-                        # 손절선은 정규장 stop_loss_pct(3%)보다 약간 보수적으로 -3.5% 적용
-                        swing_pre_stop = max(self.cfg.exit.stop_loss_pct, 3.0) + 0.5
-                        if pnl_pct <= -swing_pre_stop:
-                            log.info("[NXT-SW] %s 프리장 갭하락 손절 pnl=%.2f%% (기준 -%.1f%%)",
-                                     pos.symbol, pnl_pct, swing_pre_stop)
-                            if self._close_position_nxt(pos, px, CloseReason.STOP_LOSS):
-                                changed = True
-                except Exception as e:
-                    log.error("[NXT %s] 프리장 매도 체크 오류: %s", pos.symbol, e)
-            if changed:
-                state_store.save_positions([p.to_dict() for p in positions])
-            return  # 프리장에서는 엔트리/reconcile 스킵
-
         # 정규장 로직
         # 후보 소진 또는 묵은 후보 자동 재토론 (쿨다운·한도 가드)
         active_cands = [c for c in candidates if not c.is_expired(now)]
@@ -403,35 +486,6 @@ class MarketMonitor:
                 len(active_cands), slots_full, oldest_hours,
             )
             rescreen_trigger.trigger_rescreen(now, manual=False)
-
-        # ── 종가배팅 익일 오전 매도 ──
-        if cb_cfg.enabled and is_closing_bet_sell_time(now, cb_cfg.sell_before_hhmm):
-            for pos in active_positions:
-                if pos.strategy != "closing_bet":
-                    continue
-                # NXT 미체결 주문 대기 중 → reconcile이 처리
-                if pos.order_id and pos.order_id.startswith("NXT:"):
-                    continue
-                # 어제 진입한 종가배팅 포지션만 매도
-                if pos.entry_time.strftime("%Y-%m-%d") == today:
-                    continue  # 오늘 진입 = 아직 오버나이트 아님
-                try:
-                    price_data = self.kis.get_price(pos.symbol)
-                    px = float(price_data.get("stck_prpr", 0) or 0)
-                    if px <= 0:
-                        continue
-                    pnl_pct = pos.pnl_pct(px)
-                    # 목표 도달 또는 손절 또는 매도 시간 임박
-                    should_sell = (
-                        pnl_pct >= cb_cfg.target_profit_pct
-                        or pnl_pct <= -cb_cfg.stop_loss_pct
-                        or now.time() >= (datetime.combine(now.date(), datetime.min.time()) + timedelta(minutes=-5 + cb_cfg.sell_before_hhmm // 100 * 60 + cb_cfg.sell_before_hhmm % 100)).time()
-                    )
-                    if should_sell:
-                        self._close_position(pos, px, CloseReason.CLOSING_BET_MORNING)
-                        changed = True
-                except Exception as e:
-                    log.error("[CB %s] 익일매도 체크 오류: %s", pos.symbol, e)
 
         for pos in active_positions:
             if pos.state == PositionState.CLOSED:
@@ -461,6 +515,9 @@ class MarketMonitor:
                 except Exception as e:
                     log.warning("[NXT %s] 타임아웃 처리 오류: %s", pos.symbol, e)
                     continue
+            # manual 전략은 봇 관리 대상 아님 — 트레일링/check_exit 모두 skip
+            if (pos.strategy or "swing") == "manual":
+                continue
             # 이벤트 워커가 이미 매도 진행 중이면 중복 방지
             with self._closing_lock:
                 if pos.symbol in self._closing_symbols:
@@ -479,6 +536,10 @@ class MarketMonitor:
                     changed = True
 
                 should_exit, reason = self.pos_mgr.check_exit(pos, px, now)
+                if should_exit and reason and state_store.is_sell_blocked(pos.symbol):
+                    log.info("[%s] 매도 트리거 발생했으나 매도 금지 종목 — 차단 (%s)",
+                             pos.symbol, reason.value)
+                    continue
                 if should_exit and reason:
                     # G-3: 목표가 도달 + 2주 이상 → 절반 익절, 나머지 트레일링
                     if reason == CloseReason.TAKE_PROFIT and pos.qty >= 2:
@@ -498,6 +559,17 @@ class MarketMonitor:
                         pos.state = PositionState.TRAILING
                         pos.peak_price = px
                         pos.trailing_stop_px = px * (1.0 - self.cfg.exit.trailing_pct / 100.0)
+                        event_log.append_event("partial_take_profit", {
+                            "symbol": pos.symbol,
+                            "name": pos.name,
+                            "strategy": pos.strategy,
+                            "sold_qty": sell_qty,
+                            "remaining_qty": remain_qty,
+                            "trigger_price": int(px),
+                            "avg_price": int(pos.avg_price),
+                            "pnl_pct": round(pos.pnl_pct(px), 2),
+                            "trailing_stop_px": int(pos.trailing_stop_px or 0),
+                        })
                         changed = True
                     else:
                         self._close_position(pos, px, reason)
@@ -617,6 +689,20 @@ class MarketMonitor:
                             stats["realized_pnl"] = self._daily_pnl
                             stats["trade_count"] = int(stats.get("trade_count", 0)) + 1
                             state_store.save_daily_stats(stats)
+                        event_log.append_event("exit_reconciled", {
+                            "symbol": pos.symbol,
+                            "name": pos.name,
+                            "strategy": pos.strategy,
+                            "reason": reason.value,
+                            "qty": pos.qty,
+                            "avg_price": int(pos.avg_price),
+                            "close_price": int(actual_px),
+                            "pnl_pct": round(pos.pnl_pct(actual_px), 2),
+                            "pnl_amount": pnl_amt,
+                            "miss_count": miss,
+                            "holding_minutes": int((pos.close_time - pos.entry_time).total_seconds() / 60),
+                            "order_id": pos.order_id,
+                        })
                         self._reconcile_miss.pop(pos.symbol, None)
                         changed = True
                 else:
@@ -640,7 +726,6 @@ class MarketMonitor:
                     # candidates 에 있던 종목 → 봇 의도 매수였으므로 자동 복구
                     cand_match = next((c for c in candidates if c.symbol == symbol), None)
                     if cand_match:
-                        is_cb = "closing_bet" in (cand_match.tags or [])
                         new_pos = SwingPosition(
                             symbol=symbol,
                             name=cand_match.name,
@@ -651,8 +736,9 @@ class MarketMonitor:
                             stop_price=cand_match.stop_price,
                             state=PositionState.ENTERED,
                             peak_price=kis["avg"] or 0.0,
-                            strategy="closing_bet" if is_cb else "swing",
+                            strategy="swing",
                             rationale=getattr(cand_match, "rationale", None),
+                            tags=list(getattr(cand_match, "tags", []) or []),
                             agent_opinions=getattr(cand_match, "agent_opinions", None),
                         )
                         positions.append(new_pos)
@@ -666,9 +752,40 @@ class MarketMonitor:
                             symbol, kis["qty"], new_pos.strategy,
                         )
                     else:
-                        log.warning(
-                            "⚠️ KIS 잔고 [%s] %d주 있으나 positions·candidates 모두에 없음 — 수동 매수로 추정, 봇 미관리",
-                            symbol, kis["qty"],
+                        # 수동 매수 종목 → positions에 manual 전략으로 자동 편입 + 매도금지 자동 등록
+                        try:
+                            kis_name = self.kis.get_stock_name(symbol) or symbol
+                        except Exception:
+                            kis_name = symbol
+                        manual_pos = SwingPosition(
+                            symbol=symbol,
+                            name=kis_name,
+                            qty=kis["qty"],
+                            avg_price=kis["avg"] or 0.0,
+                            entry_time=now,
+                            target_price=0.0,   # 봇 자동 매도 대상 아님
+                            stop_price=0.0,
+                            state=PositionState.ENTERED,
+                            peak_price=kis["avg"] or 0.0,
+                            strategy="manual",
+                            rationale="수동 매수 (KIS 잔고 기반 자동 편입)",
+                        )
+                        positions.append(manual_pos)
+                        active_positions.append(manual_pos)
+                        # 매도 금지 자동 등록
+                        bl = state_store.load_sell_blacklist() or []
+                        if not any(e.get("symbol") == symbol for e in bl):
+                            bl.append({
+                                "symbol": symbol, "name": kis_name,
+                                "added_at": now.isoformat(timespec="seconds"),
+                                "auto": True,
+                                "reason": "수동 매수 자동 편입",
+                            })
+                            state_store.save_sell_blacklist(bl)
+                        changed = True
+                        log.info(
+                            "✅ KIS 잔고 [%s] %s %d주 → manual 포지션 편입 + 매도금지 자동 등록",
+                            symbol, kis_name, kis["qty"],
                         )
         except Exception as e:
             log.error("잔고 조회/대사 실패: %s", e)
@@ -678,10 +795,8 @@ class MarketMonitor:
         if changed:
             state_store.save_positions([p.to_dict() for p in positions])
 
-        # 매수 허용 시간 확인 (스윙 또는 종가배팅 시간이 아니면 스킵)
-        swing_ok = is_entry_allowed(now)
-        cb_ok = cb_cfg.enabled and is_closing_bet_entry(now, cb_cfg.entry_from_hhmm, cb_cfg.entry_to_hhmm)
-        if not swing_ok and not cb_ok:
+        # 매수 허용 시간 확인 (스윙 진입 가능 시간이 아니면 스킵)
+        if not is_entry_allowed(now):
             return
 
         # 오늘 이미 거래된 종목 (당일 진입 또는 당일 매도된 것) → 재진입 금지
@@ -705,6 +820,12 @@ class MarketMonitor:
 
         active_now = [p for p in positions if p.state != PositionState.CLOSED]
         entered_symbols: set[str] = set()  # 이번 틱에서 진입한 종목
+        held_symbols_now = {p.symbol for p in active_now}
+
+        # ── 피봇 게이트: watchlist 검사 → 통과 종목을 candidates로 승격 ──
+        candidates = self._evaluate_watchlist_pivots(
+            now, candidates, held_symbols_now, traded_today, stopped_recently,
+        )
 
         # 후보 가격 일괄 조회 + 진입 불가 후보 자동 제거
         drop_pct = self.cfg.screening.drop_above_entry_pct / 100.0
@@ -791,6 +912,12 @@ class MarketMonitor:
             state_store.save_candidates([c.to_dict() for c in remaining_candidates])
             log.info("갭 게이트 제거 %d개: %s", len(gap_aborted), gap_aborted)
 
+        # 매수 정지 토글 — 사용자가 수동으로 매수만 중지 (매도는 정상)
+        if state_store.is_entry_paused():
+            if remaining_candidates:
+                log.info("[매수정지] 활성 — 후보 %d개 진입 보류", len(remaining_candidates))
+            return
+
         # 신뢰도(consensus_score) 높은 순으로 진입 시도
         for cand in sorted(remaining_candidates, key=lambda c: c.consensus_score, reverse=True):
             # 당일 이미 거래된 종목은 재진입 금지
@@ -799,6 +926,11 @@ class MarketMonitor:
             # D-3: 최근 3일 내 손절 종목 쿨다운
             if cand.symbol in stopped_recently:
                 log.debug("[%s] 최근 3일 내 손절 → 재진입 쿨다운", cand.symbol)
+                continue
+            # 신뢰도 최소값 미달 진입 차단
+            min_score = self.cfg.screening.min_entry_consensus_score
+            if (cand.consensus_score or 0) < min_score:
+                log.debug("[%s] 신뢰도 %.2f < %.2f → 진입 보류", cand.symbol, cand.consensus_score or 0, min_score)
                 continue
             px = cand_prices.get(cand.symbol, 0)
             if px <= 0:
@@ -812,18 +944,12 @@ class MarketMonitor:
                     continue
             except Exception:
                 pass
-            # 전략별 진입 시간 확인
-            is_cb = "closing_bet" in (cand.tags or [])
-            if is_cb and not is_closing_bet_entry(now, cb_cfg.entry_from_hhmm, cb_cfg.entry_to_hhmm):
-                continue
-            if not is_cb and not is_entry_allowed(now):
+            if not is_entry_allowed(now):
                 continue
             try:
-                strat = "closing_bet" if is_cb else "swing"
-                strat_max = cb_cfg.max_positions if is_cb else self.cfg.trading.max_positions
                 new_pos = self.entry_exec.try_entry(
                     cand, px, cash, active_now,
-                    strategy=strat, strategy_max=strat_max,
+                    strategy="swing", strategy_max=self.cfg.trading.max_positions,
                 )
                 if new_pos:
                     positions.append(new_pos)
@@ -836,6 +962,21 @@ class MarketMonitor:
                         new_pos.symbol, new_pos.avg_price, new_pos.qty,
                         new_pos.target_price, new_pos.stop_price,
                     )
+                    event_log.append_event("entry_filled", {
+                        "symbol": new_pos.symbol,
+                        "name": new_pos.name,
+                        "strategy": new_pos.strategy,
+                        "qty": new_pos.qty,
+                        "avg_price": int(new_pos.avg_price),
+                        "trigger_price": int(px),
+                        "target_price": int(new_pos.target_price),
+                        "stop_price": int(new_pos.stop_price),
+                        "consensus_score": round(cand.consensus_score or 0, 3),
+                        "candidate_entry_low": int(cand.entry_low),
+                        "candidate_entry_high": int(cand.entry_high),
+                        "rationale": cand.rationale,
+                        "tags": cand.tags,
+                    })
                     apple_notes.report_trade(
                         "매수", new_pos.symbol, new_pos.name,
                         new_pos.avg_price, new_pos.qty,
@@ -854,6 +995,9 @@ class MarketMonitor:
 
     def _close_position_nxt(self, pos: SwingPosition, price: float, reason: CloseReason) -> bool:
         """NXT 거래소 지정가 매도. 성공 시 True 반환."""
+        if state_store.is_sell_blocked(pos.symbol):
+            log.warning("[NXT %s] 매도 금지 종목 — %s 차단", pos.symbol, reason.value)
+            return False
         pnl_amount = int((price - pos.avg_price) * pos.qty)
         pnl_pct = pos.pnl_pct(price)
         log.info(
@@ -865,6 +1009,20 @@ class MarketMonitor:
             pos.close_reason = reason
             pos.close_price = price
             pos.close_time = datetime.now()
+            event_log.append_event("exit_filled", {
+                "symbol": pos.symbol,
+                "name": pos.name,
+                "strategy": pos.strategy,
+                "market": "nxt",
+                "dry_run": True,
+                "reason": reason.value,
+                "qty": pos.qty,
+                "avg_price": int(pos.avg_price),
+                "close_price": int(price),
+                "pnl_pct": round(pnl_pct, 2),
+                "pnl_amount": pnl_amount,
+                "holding_minutes": int((pos.close_time - pos.entry_time).total_seconds() / 60),
+            })
             return True
         try:
             result = self.kis.sell_nxt(pos.symbol, pos.qty, price)
@@ -896,6 +1054,22 @@ class MarketMonitor:
         pos.close_price = price
         pos.close_time = datetime.now()
         self._daily_pnl += pnl_amount
+        event_log.append_event("exit_filled", {
+            "symbol": pos.symbol,
+            "name": pos.name,
+            "strategy": pos.strategy,
+            "market": "nxt",
+            "dry_run": self.dry_run,
+            "reason": reason.value,
+            "qty": pos.qty,
+            "avg_price": int(pos.avg_price),
+            "close_price": int(price),
+            "pnl_pct": round(pnl_pct, 2),
+            "pnl_amount": pnl_amount,
+            "holding_minutes": int((pos.close_time - pos.entry_time).total_seconds() / 60),
+            "peak_price": int(pos.peak_price or 0),
+            "trailing_stop_px": int(pos.trailing_stop_px or 0),
+        })
         log.info("[NXT %s] 체결 완료. 오늘 누적 PnL: %+d원", pos.symbol, int(self._daily_pnl))
         stats = state_store.load_daily_stats()
         stats["date"] = now_kst().strftime("%Y-%m-%d")
@@ -915,6 +1089,9 @@ class MarketMonitor:
         price: float,
         reason: CloseReason,
     ) -> None:
+        if state_store.is_sell_blocked(pos.symbol):
+            log.warning("[%s] 매도 금지 종목 — %s 차단", pos.symbol, reason.value)
+            return
         pnl_pct = pos.pnl_pct(price)
         pnl_amount = int((price - pos.avg_price) * pos.qty)
 
@@ -1037,6 +1214,24 @@ class MarketMonitor:
         pos.close_price = price
         pos.close_time = datetime.now()
         self._daily_pnl += pnl_amount
+        event_log.append_event("exit_filled", {
+            "symbol": pos.symbol,
+            "name": pos.name,
+            "strategy": pos.strategy,
+            "market": "krx",
+            "dry_run": self.dry_run,
+            "reason": reason.value,
+            "qty": pos.qty,
+            "avg_price": int(pos.avg_price),
+            "close_price": int(price),
+            "pnl_pct": round(pnl_pct, 2),
+            "pnl_amount": pnl_amount,
+            "holding_minutes": int((pos.close_time - pos.entry_time).total_seconds() / 60),
+            "peak_price": int(pos.peak_price or 0),
+            "trailing_stop_px": int(pos.trailing_stop_px or 0),
+            "target_price": int(pos.target_price),
+            "stop_price": int(pos.stop_price),
+        })
         log.info("[%s] 오늘 누적 PnL: %+d원", pos.symbol, int(self._daily_pnl))
         # 재시작 시에도 유지되도록 영속 저장
         stats = state_store.load_daily_stats()

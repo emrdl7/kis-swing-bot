@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 import yaml
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,61 +28,81 @@ class TradingConfig(BaseModel):
 
 
 class ExitConfig(BaseModel):
-    take_profit_pct: float = 4.0
-    stop_loss_pct: float = 2.5
-    trailing_activate_pct: float = 2.0
-    trailing_pct: float = 1.5
+    take_profit_pct: float = 8.0
+    stop_loss_pct: float = 7.0
+    trailing_activate_pct: float = 3.0
+    trailing_pct: float = 5.0
     eod_sell_hhmm: int = 1510
     eod_sell_enabled: bool = False
 
 
 class ScreeningConfig(BaseModel):
-    max_candidates: int = 5
-    min_market_cap_bn: int = 500
+    max_candidates: int = 8
+    min_market_cap_bn: int = 5000
     min_volume: int = 500000
     min_trade_amount: int = 5_000_000_000
-    entry_zone_slack_pct: float = 1.0
-    entry_expiry_days: int = 3
+    quant_universe_enabled: bool = True
+    quant_universe_top_n: int = 80
+    quant_universe_min_trade_amount_bn: float = 80.0
+    quant_universe_max_results: int = 40
+    entry_zone_slack_pct: float = 0.5
+    entry_expiry_days: int = 14
     drop_above_entry_pct: float = 5.0  # 진입구간 상단 대비 이 % 이상 위면 후보 제거
+    min_entry_consensus_score: float = 0.45  # 진입 최소 신뢰도
     # 2단계 선분석 설정
     evening_prescreen_enabled: bool = True
-    evening_candidate_n: int = 15        # 저녁 선분석에서 뽑을 초벌 후보 수
+    evening_candidate_n: int = 20        # 저녁 선분석에서 뽑을 초벌 후보 수
     entry_cooldown_until: str = "09:05"  # HH:MM. 이 시각 이전엔 매수 금지 (정보용, clock.py와 동기화)
     open_gap_abort_pct: float = 3.0      # 시초가 vs 저녁 기준가 절대 이탈이 이 % 이상이면 ABORT
 
 
 class AgentsConfig(BaseModel):
-    model: str = "claude-opus-4-6"
+    """LLM 백엔드 설정. Codex와 Gemini는 서로 fallback한다."""
+    primary: Literal["codex", "gemini"] = "codex"
+    codex_model: str = ""                        # 빈 값이면 codex 계정 default. ChatGPT 구독은 명시 모델명 거부함
+    gemini_model: str = "gemini-2.5-pro"         # gemini 모델명
     max_tokens: int = 2000
     debate_rounds: int = 2
     num_agents: int = 3
 
 
-class ClosingBetConfig(BaseModel):
-    """종가배팅 전략 설정."""
-    enabled: bool = False
-    screening_hhmm: int = 1450           # 스크리닝 시각
-    entry_from_hhmm: int = 1520          # 매수 시작
-    entry_to_hhmm: int = 1525            # 매수 마감
-    sell_before_hhmm: int = 1000         # 다음 날 이 시각 전 매도
-    target_profit_pct: float = 3.0       # 목표 수익률
-    stop_loss_pct: float = 1.5           # 손절 기준
-    max_positions: int = 2               # 종가배팅 최대 포지션
-    min_trade_amount_bn: int = 50        # 최소 거래대금 (억원)
-    min_change_pct: float = 2.0          # 당일 최소 등락률
-    top_n: int = 30                      # 순위 조회 상위 N개
-    score_weights: dict = {              # V스코어 가중치
-        "trade_amount": 0.30,
-        "change_pct": 0.25,
-        "volume_ratio": 0.25,
-        "ma_position": 0.20,
-    }
-    # NXT 프리장(08:00~09:00) 조기 매도 옵션
-    pre_market_sell_enabled: bool = True
-    pre_market_from_hhmm: int = 800      # 프리장 매도 감시 시작
-    pre_market_to_hhmm: int = 855        # 프리장 매도 감시 종료 (정규장 직전)
-    pre_market_target_profit_pct: float = 4.0   # NXT 갭상승 익절 기준 (정규장보다 공격적)
-    pre_market_stop_loss_pct: float = 3.0       # NXT 갭하락 손절 기준
+class PivotGateConfig(BaseModel):
+    """정량 피봇 게이트 설정.
+
+    mode:
+      - "pullback" (기본): LLM 진입대 + 저점 반등 + 거래량 보존 (눌림목 매수)
+      - "breakout": 박스 상단 돌파 + 거래량 폭발 (모멘텀 매수)
+    """
+    enabled: bool = True
+    mode: str = "pullback"              # pullback | breakout
+    # 공통
+    min_trade_amount_bn: float = 50.0   # 당일 누적 거래대금 최소 (억원)
+    require_ma_uptrend: bool = True     # MA20 > MA60 추세 게이트
+    # pullback 전용
+    bounce_pct_min: float = 0.5         # 최근 N일 저점 대비 최소 회복율 (%)
+    bounce_lookback: int = 5            # 저점 산정 윈도우 (일)
+    pullback_vol_ratio_min: float = 0.8 # pullback 거래량 위축 한도
+    entry_zone_slack_pct: float = 1.0   # entry_zone 양쪽 여유 (%)
+    # breakout 전용
+    box_lookback: int = 20              # 박스 산정 일수
+    breakout_pct_min: float = 0.3       # 박스 상단 대비 최소 돌파율 (%)
+    breakout_pct_max: float = 5.0       # 추격매수 차단 상한 (%)
+    breakout_vol_ratio_min: float = 1.5 # breakout 거래량 폭발 임계
+    # watchlist
+    watchlist_max: int = 25             # watchlist 최대 종목 수
+    watchlist_expiry_days: int = 14     # watchlist 항목 만료
+    check_interval_sec: int = 60        # 게이트 검사 최소 간격 (monitor 사이클 내 throttle)
+
+
+class PositionReviewConfig(BaseModel):
+    """일일 보유 포지션 재평가 설정 (마이너스 종목 → 재료/지표 점검)."""
+    enabled: bool = True
+    hhmm: int = 1100                    # 실행 시각 (HHMM, 11:00 기본)
+    min_holding_days: int = 1           # 최소 보유 일수 (당일 진입분 제외)
+    only_negative: bool = True          # 마이너스 포지션만 평가
+    sell_conviction_threshold: float = 0.7   # 이 값 이상이면 SELL 플래그 세팅
+    max_sells_per_day: int = 3          # 하루 SELL 판정 최대 종목 수 (세이프티)
+    news_lookback_hours: int = 48       # 재료 소멸 판단용 뉴스 수집 윈도우
 
 
 class NotificationConfig(BaseModel):
@@ -125,7 +145,8 @@ class AppConfig(BaseSettings):
     exit: ExitConfig = Field(default_factory=ExitConfig)
     screening: ScreeningConfig = Field(default_factory=ScreeningConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
-    closing_bet: ClosingBetConfig = Field(default_factory=ClosingBetConfig)
+    pivot_gate: PivotGateConfig = Field(default_factory=PivotGateConfig)
+    position_review: PositionReviewConfig = Field(default_factory=PositionReviewConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     dart: DartConfig = Field(default_factory=DartConfig)
     news: NewsConfig = Field(default_factory=NewsConfig)

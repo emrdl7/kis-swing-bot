@@ -28,10 +28,10 @@ LOCK_FILE = PROJECT_ROOT / "state" / "rescreen.lock"
 SCRIPT = PROJECT_ROOT / "src" / "scripts" / "run_morning_screen.py"
 PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python3"
 
-MAX_PER_DAY = 2
-COOLDOWN_MIN = 120
-LOW_CAND_THRESHOLD = 1        # 이 수 이하면 자동 트리거
-STALE_CAND_DAYS = 2           # 후보가 이만큼 묵으면 슬롯 차있어도 재토론 유도
+MAX_PER_DAY = 3
+COOLDOWN_MIN = 120            # 2시간 쿨다운
+LOW_CAND_THRESHOLD = 0        # 후보 0개일 때만 자동 트리거
+STALE_CAND_DAYS = 7           # 후보가 7일 이상 묵으면 재토론 유도
 BLACKOUT_START = time(9, 0)   # 이 시각부터
 BLACKOUT_END = time(9, 10)    # 이 시각까지 스킵 (모닝 직후)
 CUTOFF = time(14, 30)         # 이후는 진입 시간 부족 → 스킵
@@ -142,7 +142,10 @@ def trigger_rescreen(now: datetime | None = None, manual: bool = False) -> dict:
                            "KIS_RESCREEN_MODE": "intraday"}
         if gemini_bin:
             extra_env["GEMINI_BIN"] = gemini_bin
-        signal.signal(signal.SIGCHLD, signal.SIG_IGN)  # 자식 종료 시 자동 수거 (좀비 방지)
+        try:
+            signal.signal(signal.SIGCHLD, signal.SIG_IGN)  # 자식 종료 시 자동 수거 (좀비 방지)
+        except (OSError, ValueError):
+            pass  # 비메인 스레드에서는 signal 설정 불가 — 무시
         proc = subprocess.Popen(
             [str(PYTHON), str(SCRIPT)],
             stdout=open(log_path, "a"),

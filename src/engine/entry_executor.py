@@ -56,7 +56,7 @@ class EntryExecutor:
         """후보 종목 진입 조건 확인 후 매수 실행.
 
         Args:
-            strategy: "swing" | "closing_bet" — 포지션에 기록될 전략명
+            strategy: "swing" — 포지션에 기록될 전략명
             strategy_max: 해당 전략의 최대 동시 보유 수. None 이면 trading.max_positions 사용
 
         Returns:
@@ -220,6 +220,7 @@ class EntryExecutor:
             peak_price=actual_price,
             strategy=strategy,
             rationale=getattr(candidate, "rationale", None),
+            tags=list(getattr(candidate, "tags", []) or []),
             agent_opinions=getattr(candidate, "agent_opinions", None),
         )
         return pos

@@ -18,6 +18,7 @@ import yaml
 
 from src.core.config import load_config
 from src.core import state_store
+from src.core.clock import now_kst, today_label
 from src.core.models import PositionState, SwingPosition, SwingCandidate
 from src.agents.llm_client import LLMClient
 from src.notification import apple_notes
@@ -34,7 +35,7 @@ TUNABLE_PARAMS = {
     "exit.trailing_activate_pct": (1.0,  4.0),
     "exit.trailing_pct":          (0.5,  3.0),
     "screening.entry_zone_slack_pct": (0.5, 3.0),
-    "screening.entry_expiry_days":    (1,   7),
+    "screening.entry_expiry_days":    (1,  21),
     "trading.position_size_pct":      (0.10, 0.50),
 }
 
@@ -110,7 +111,8 @@ def _generate_analysis(llm: LLMClient, context: str, today: str) -> str:
 
     tunable_list = "\n".join(f"  - {k}: {lo} ~ {hi}" for k, (lo, hi) in TUNABLE_PARAMS.items())
 
-    user = f"""아래는 오늘({today}) 스윙 트레이딩 봇의 매매 데이터입니다.
+    user = f"""아래는 오늘({today}) 한국 주식 시장 마감 후 스윙 트레이딩 봇의 매매 데이터입니다.
+한국 시간(KST) 기준 영업일 데이터이며, 요일은 위 날짜를 기준으로 판단하십시오.
 
 {context}
 
@@ -202,11 +204,17 @@ def main() -> None:
     if not is_trading_day():
         log.info("비영업일 — 장 마감 보고 스킵")
         return
-    today = datetime.now().strftime("%Y-%m-%d")
+    _now = now_kst()
+    today_iso = _now.strftime("%Y-%m-%d")  # YYYY-MM-DD (비교/저장용)
+    today = today_label(_now)              # LLM/표시용 (요일+KST)
     log.info("=== 장 마감 보고 [%s] ===", today)
 
     cfg = load_config()
-    llm = LLMClient(model=cfg.agents.model, max_tokens=cfg.agents.max_tokens)
+    llm = LLMClient(
+        codex_model=cfg.agents.codex_model,
+        gemini_model=cfg.agents.gemini_model,
+        max_tokens=cfg.agents.max_tokens, primary=cfg.agents.primary,
+    )
 
     positions = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
     candidates = [SwingCandidate.from_dict(d) for d in state_store.load_candidates()]
@@ -215,7 +223,7 @@ def main() -> None:
         p for p in positions
         if p.state == PositionState.CLOSED
         and p.close_time
-        and p.close_time.strftime("%Y-%m-%d") == today
+        and p.close_time.strftime("%Y-%m-%d") == today_iso
     ]
     open_positions = [p for p in positions if p.state != PositionState.CLOSED]
 
@@ -259,7 +267,7 @@ def main() -> None:
     else:
         report_text += "\n\n---\n\n_파라미터 변경 없음 — 현재 설정 유지_"
 
-    apple_notes.report_eod_analysis(report_text, daily_pnl, today)
+    apple_notes.report_eod_analysis(report_text, daily_pnl, today_iso)
 
     log.info(
         "장 마감 보고 완료 — PnL: %+d원, 청산: %d건, 보유: %d종목, 파라미터 조정: %d건",

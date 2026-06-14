@@ -104,3 +104,61 @@ def load_evening_candidates() -> dict:
 
 def save_evening_candidates(data: dict) -> None:
     save("evening_candidates", data)
+
+
+def load_position_review_log() -> list[dict]:
+    """일일 포지션 재평가 판정 기록 (사후 검증용).
+
+    각 항목: {date, decided_at, symbol, name, pnl_pct, decision, conviction, rationale}
+    """
+    return load("position_review_log", [])
+
+
+def save_position_review_log(entries: list[dict]) -> None:
+    save("position_review_log", entries)
+
+
+def load_sell_blacklist() -> list[dict]:
+    """매도 금지 종목 — 봇이 자동 매도하지 않을 종목 목록.
+
+    각 항목: {"symbol": "069500", "name": "KODEX 200", "added_at": "2026-05-12T..."}
+    """
+    return load("sell_blacklist", [])
+
+
+def save_sell_blacklist(entries: list[dict]) -> None:
+    save("sell_blacklist", entries)
+
+
+def is_sell_blocked(symbol: str) -> bool:
+    """해당 종목이 매도 금지 목록에 있는지 빠른 체크."""
+    try:
+        return any(e.get("symbol") == symbol for e in load_sell_blacklist())
+    except Exception:
+        return False
+
+
+def load_market_summary() -> dict:
+    """LLM이 작성한 오늘의 시황 요약 (장 시작 전 1회 갱신)."""
+    return load("market_summary", {})
+
+
+def save_market_summary(data: dict) -> None:
+    save("market_summary", data)
+
+
+def load_bot_state() -> dict:
+    """봇 운영 상태 — 매매정지 등 사용자 토글. {entry_paused: bool, paused_at, reason}"""
+    return load("bot_state", {"entry_paused": False})
+
+
+def save_bot_state(data: dict) -> None:
+    save("bot_state", data)
+
+
+def is_entry_paused() -> bool:
+    """신규 매수 정지 상태 여부."""
+    try:
+        return bool((load_bot_state() or {}).get("entry_paused", False))
+    except Exception:
+        return False

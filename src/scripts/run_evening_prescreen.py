@@ -20,6 +20,9 @@ from src.data.kis_client import KisClient
 from src.data.dart_client import DartClient
 from src.data.news_fetcher import fetch_news, format_for_llm as news_fmt
 from src.data.technical import compute_indicators
+from src.data.market_context import build_market_signal, format_market_context_for_llm
+from src.data.market_overview import get_market_overview, format_market_decision_for_llm
+from src.screening.quant_universe import build_quant_universe, format_for_llm as quant_fmt
 from src.agents.llm_client import LLMClient
 from src.agents.news_agent import NewsAgent
 from src.agents.theme_agent import ThemeAgent
@@ -32,6 +35,20 @@ log = setup("evening_prescreen")
 
 # 락 파일 — 중복 실행 방지
 LOCK_FILE = PROJECT_ROOT / "state" / "evening_prescreen.lock"
+
+
+def _attach_live_market_decision(kis: KisClient, market_summary: dict) -> dict:
+    """후보 발굴 직전의 KIS 시장 게이트를 시황 요약에 덧붙인다."""
+    summary = dict(market_summary or {})
+    try:
+        overview = get_market_overview(kis, ttl_sec=0)
+        decision = overview.get("decision") if isinstance(overview.get("decision"), dict) else {}
+        if decision:
+            summary["market_decision"] = decision
+            summary["market_decision_text"] = format_market_decision_for_llm(overview)
+    except Exception as e:
+        log.warning("실시간 시장 판단 스냅샷 보강 실패: %s", e)
+    return summary
 
 
 def _is_trading_day(kis: KisClient) -> bool:
@@ -51,7 +68,7 @@ def make_price_fetcher(kis: KisClient, label: str = "EOD"):
         for sym in symbols:
             try:
                 price_data = kis.get_price(sym)
-                ohlcv = kis.get_daily_ohlcv(sym, count=60)
+                ohlcv = kis.get_daily_ohlcv(sym, count=130)
                 from src.data.technical import compute_indicators
                 ind = compute_indicators(ohlcv)
 
@@ -74,6 +91,7 @@ def make_price_fetcher(kis: KisClient, label: str = "EOD"):
                     "ma5": ind.get("ma5"),
                     "ma20": ind.get("ma20"),
                     "ma60": ind.get("ma60"),
+                    "ma120": ind.get("ma120"),
                     "atr14": ind.get("atr14"),
                     "rsi14": ind.get("rsi14"),
                     "last_volume": ind.get("last_volume", 0),
@@ -91,6 +109,7 @@ def make_price_fetcher(kis: KisClient, label: str = "EOD"):
                     "acml_vol": acml_vol,
                     "acml_tr_pbmn": acml_tr_pbmn,
                     "support_resistance": ind.get("support_resistance"),
+                    "risk_flags": ind.get("risk_flags"),
                     # 저녁 기준가 — 아침 갭 게이트에서 재사용
                     "ref_price_eod": cur_px,
                 }
@@ -175,6 +194,14 @@ def _run(cfg, today: str) -> None:
     if per_stock_budget > 0:
         budget_text = f"\n⚠️ 종목당 투자 가능 금액: 약 {per_stock_budget:,}원."
 
+    market_summary = _attach_live_market_decision(kis, state_store.load_market_summary() or {})
+    market_signal = build_market_signal(market_summary)
+
+    # 3-A) 정량 1차 유니버스
+    log.info("정량 1차 후보군 생성 중...")
+    quant_candidates = build_quant_universe(kis, cfg.screening, market_signal=market_signal)
+    quant_text = quant_fmt(quant_candidates, max_items=cfg.screening.quant_universe_max_results)
+
     # 4) 최근 실적
     recent_closed = [
         SwingPosition.from_dict(d) for d in state_store.load_positions()
@@ -201,14 +228,23 @@ def _run(cfg, today: str) -> None:
 
     # 5) LLM 멀티에이전트 토론
     log.info("LLM 멀티에이전트 토론 시작 (저녁 선분석 Phase A)...")
-    llm_gemini = LLMClient(model=cfg.agents.model, max_tokens=cfg.agents.max_tokens, primary="gemini")
-    llm_claude = LLMClient(model=cfg.agents.model, max_tokens=cfg.agents.max_tokens, primary="claude")
+    llm_gemini = LLMClient(
+        codex_model=cfg.agents.codex_model,
+        gemini_model=cfg.agents.gemini_model,
+        max_tokens=cfg.agents.max_tokens, primary="gemini",
+    )
+    # 정밀 판단(Risk/Moderator) — cfg.agents.primary 백엔드
+    llm_primary = LLMClient(
+        codex_model=cfg.agents.codex_model,
+        gemini_model=cfg.agents.gemini_model,
+        max_tokens=cfg.agents.max_tokens, primary=cfg.agents.primary,
+    )
 
     agents = [
         NewsAgent(llm_gemini),
         ThemeAgent(llm_gemini),
         TechnicalAgent(llm_gemini),
-        RiskAgent(llm_claude),
+        RiskAgent(llm_primary),
     ]
 
     # 저녁 선분석은 더 많은 후보 수 (evening_candidate_n)
@@ -219,24 +255,27 @@ def _run(cfg, today: str) -> None:
 
     engine = DebateEngine(
         agents=agents,
-        llm=llm_claude,
+        llm=llm_primary,
         screening_cfg=evening_screening_cfg,
         num_rounds=cfg.agents.debate_rounds,
         price_fetcher=make_price_fetcher(kis, label="EOD"),
     )
 
+    from src.core.clock import today_label as _today_label
     context = {
-        "today": today,
+        "today": _today_label(),  # LLM 프롬프트용 — 요일+KST 명시
         "news_text": news_text,
         "dart_text": dart_text,
         "news_summary": news_text[:500],
+        "market_context": format_market_context_for_llm(market_summary),
+        "market_signal": market_signal,
         "budget_text": budget_text,
         "nxt_text": "NXT 데이터 없음 (저녁 선분석 — 장마감 후 실행)",
+        "quant_text": quant_text,
         "perf_text": perf_text,
     }
 
     new_candidates, transcript, reserves = engine.run(context)
-    kis.close()
 
     all_prelim = new_candidates + reserves
     log.info("초벌 후보: %d개 (정규 %d + 예비 %d)", len(all_prelim), len(new_candidates), len(reserves))
@@ -261,6 +300,63 @@ def _run(cfg, today: str) -> None:
     }
     state_store.save_evening_candidates(evening_data)
     log.info("state/evening_candidates.json 저장 완료 (%d개)", len(all_prelim))
+
+    # ── watchlist 머지: 초벌 전체 + 기존 watchlist (만료/보유 제외, 중복 dedup) ──
+    pg_cfg = cfg.pivot_gate
+    if pg_cfg.enabled:
+        try:
+            now = datetime.now()
+            # 보유 종목은 watchlist에서 제외
+            held_positions = [SwingPosition.from_dict(d) for d in state_store.load_positions()]
+            held_symbols = {p.symbol for p in held_positions if p.state.value != "CLOSED"}
+
+            existing_wl = []
+            for d in state_store.load_watchlist():
+                try:
+                    c = SwingCandidate.from_dict(d)
+                    if not c.is_expired(now) and c.symbol not in held_symbols:
+                        existing_wl.append(c)
+                except Exception:
+                    continue
+
+            # 종목명 검증 — LLM이 코드 그대로 name에 넣은 경우 KIS에서 보정
+            for c in all_prelim:
+                if c.name == c.symbol:
+                    try:
+                        c.name = kis.get_stock_name(c.symbol)
+                    except Exception:
+                        pass
+
+            # 모더레이터 미통과 풀까지 watchlist에 흘림 (피봇 게이트가 진입 검증)
+            extra_pool = getattr(engine, "last_prelim_pool", []) or []
+            for c in extra_pool:
+                if c.name == c.symbol:
+                    try:
+                        c.name = kis.get_stock_name(c.symbol)
+                    except Exception:
+                        pass
+
+            new_symbols = {c.symbol for c in all_prelim}
+            merged = (
+                [c for c in all_prelim if c.symbol not in held_symbols]
+                + [c for c in extra_pool
+                   if c.symbol not in new_symbols and c.symbol not in held_symbols]
+                + [c for c in existing_wl
+                   if c.symbol not in new_symbols
+                   and c.symbol not in {p.symbol for p in extra_pool}]
+            )
+            # consensus_score 높은 순 + 상한
+            merged.sort(key=lambda c: (c.consensus_score or 0), reverse=True)
+            merged = merged[: pg_cfg.watchlist_max]
+            state_store.save_watchlist([c.to_dict() for c in merged])
+            log.info(
+                "watchlist 머지: 모더 %d + 추가풀 %d + 기존 %d → 저장 %d (상한 %d)",
+                len(all_prelim), len(extra_pool), len(existing_wl), len(merged), pg_cfg.watchlist_max,
+            )
+        except Exception as e:
+            log.warning("watchlist 머지 실패 (무시): %s", e)
+
+    kis.close()
 
     for i, c in enumerate(all_prelim, 1):
         log.info(

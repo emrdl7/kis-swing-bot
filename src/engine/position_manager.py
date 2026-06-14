@@ -9,12 +9,14 @@ from src.core.models import CloseReason, PositionState, SwingPosition
 
 log = logging.getLogger(__name__)
 
-# F-2: 단계별 트레일링 — 수익 구간별 trailing 폭
+# F-2: 단계별 트레일링 — LLM 기반 진입(피봇 정확도 낮음) → 수익 보호 강화 톤
+# 정석(8~12%)은 정확한 피봇 진입 전제이므로, 우리는 더 타이트하게 운용.
 _TRAILING_TIERS = [
     # (pnl_pct 이상, trailing_pct)
-    (7.0, 0.6),   # +7% 이상: 0.6% 폭 (수익 보호 최강)
-    (5.0, 0.8),   # +5% 이상: 0.8% 폭
-    (2.5, 1.2),   # +2.5% 이상: 1.2% 폭 (기본)
+    (15.0, 3.0),  # +15% 이상: 3% 폭 (확정 수익 보호)
+    (10.0, 3.5),  # +10% 이상: 3.5% 폭
+    (7.0,  4.0),  # +7% 이상: 4% 폭
+    (5.0,  5.0),  # +5% 이상: 5% 폭 (초기 스윙 노이즈 허용)
 ]
 
 
@@ -36,13 +38,34 @@ class PositionManager:
         now = now or datetime.now()
         pnl_pct = pos.pnl_pct(current_price)
 
-        # 1) 손절 (최우선)
+        # 1) 손절 — pnl 기준 (-stop_loss_pct) 또는 pos.stop_price 도달
+        # F-4 본전 보호로 stop_price가 매수가까지 상향된 경우 여기서 작동.
         if pnl_pct <= -self.cfg.stop_loss_pct:
             log.warning(
                 "[%s] 손절 발동 pnl=%.2f%% <= -%.2f%%",
                 pos.symbol, pnl_pct, self.cfg.stop_loss_pct,
             )
             return True, CloseReason.STOP_LOSS
+
+        if pos.stop_price and current_price <= pos.stop_price:
+            be_protect = pos.stop_price >= pos.avg_price
+            log.warning(
+                "[%s] %s 발동 current=%.0f <= stop=%.0f (pnl=%.2f%%)",
+                pos.symbol,
+                "본전 보호 손절" if be_protect else "지정 손절가",
+                current_price, pos.stop_price, pnl_pct,
+            )
+            return True, CloseReason.STOP_LOSS
+
+        # 1-A) 일일 재평가 SELL 플래그 (손절 다음, 트레일링/목표가보다 우선)
+        if pos.review_decision == "SELL":
+            log.warning(
+                "[%s] 재평가 SELL 발동 pnl=%.2f%% conviction=%.2f rationale=%s",
+                pos.symbol, pnl_pct,
+                pos.review_conviction or 0.0,
+                (pos.review_rationale or "")[:80],
+            )
+            return True, CloseReason.REVIEW_SELL
 
         # 2) 트레일링 스탑 (목표가보다 우선)
         if pos.state == PositionState.TRAILING and pos.trailing_stop_px:
@@ -69,12 +92,12 @@ class PositionManager:
                 )
                 return True, CloseReason.TAKE_PROFIT
 
-        # F-3: 모멘텀 소실 매도 (3일 경과 + 수익률 0~1% 정체)
+        # F-3: 모멘텀 소실 매도 (14일 경과 + 수익률 -2%~+2% 정체)
         if pos.entry_time:
             holding_days = (now - pos.entry_time).total_seconds() / 86400
-            if holding_days >= 3 and 0 <= pnl_pct < 1.0:
+            if holding_days >= 14 and -2.0 <= pnl_pct < 2.0:
                 log.info(
-                    "[%s] 모멘텀 소실 — 보유 %.1f일, pnl=%.2f%% (0~1%% 정체)",
+                    "[%s] 모멘텀 소실 — 보유 %.1f일, pnl=%.2f%% (2주 정체)",
                     pos.symbol, holding_days, pnl_pct,
                 )
                 return True, CloseReason.EOD  # EOD 사유 재사용 (모멘텀 소실)
@@ -104,8 +127,8 @@ class PositionManager:
         if current_price > pos.peak_price:
             pos.peak_price = current_price
 
-        # F-4: 본전 보호 — +1% 이상이면 손절선을 매수가로 상향
-        if pnl_pct >= 1.0 and pos.stop_price < pos.avg_price:
+        # F-4: 본전 보호 — 스윙 노이즈를 감안해 +5% 이상부터 손절선을 매수가로 상향
+        if pnl_pct >= 5.0 and pos.stop_price < pos.avg_price:
             pos.stop_price = pos.avg_price
             log.info("[%s] 본전 보호 활성: 손절선 → 매수가 %.0f", pos.symbol, pos.avg_price)
 

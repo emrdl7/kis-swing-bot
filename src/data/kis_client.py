@@ -98,9 +98,24 @@ class KisClient:
     # ── 시세 조회 ──────────────────────────────────────────────────────────
 
     def _get_with_retry(self, url: str, headers: dict, params: dict, retries: int = 2) -> dict:
-        """GET 요청, 500 오류 시 최대 retries회 재시도."""
+        """GET 요청, 500 오류 시 최대 retries회 재시도. 토큰 만료 시 강제 재발급."""
+        token_refreshed = False
         for attempt in range(retries + 1):
             resp = self._client.get(url, headers=headers, params=params)
+            # 토큰 서버 측 무효화 자동 복구
+            if (resp.status_code in (401, 500)
+                    and not token_refreshed
+                    and self._is_token_expired_response(resp)):
+                log.warning("GET 응답에 토큰 만료(EGW00123) → 강제 재발급 후 재시도")
+                self._access_token = ""
+                self._token_expires_at = datetime.min
+                self._issue_token()
+                token_refreshed = True
+                # 헤더 갱신 후 재시도 (호출자가 만든 headers의 authorization 재구성 필요)
+                # tr_id를 headers에서 추출해 재구성
+                tr_id = headers.get("tr_id", "")
+                headers = self._headers(tr_id)
+                continue
             if resp.status_code == 500 and attempt < retries:
                 time.sleep(1)
                 continue
@@ -124,25 +139,111 @@ class KisClient:
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
         return self._get_with_retry(url, self._headers("FHKST01010100"), params).get("output", {})
 
-    def get_daily_ohlcv(self, symbol: str, count: int = 20) -> list[dict]:
-        """일봉 데이터 조회 (최근 count일)."""
+    def get_index_change_pct(self, index_code: str = "0001") -> float:
+        """지수 등락률 조회. 0001=KOSPI, 1001=KOSDAQ. 실패 시 0.0 반환."""
+        try:
+            self.ensure_token()
+            url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/quotations/inquire-index-price"
+            params = {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": index_code}
+            out = self._get_with_retry(url, self._headers("FHKUP03500100"), params).get("output", {})
+            return float(out.get("bstp_nmix_prdy_ctrt", 0) or 0)
+        except Exception as e:
+            log.warning("지수 등락률 조회 실패 [%s]: %s", index_code, e)
+            return 0.0
+
+    def get_daily_ohlcv(self, symbol: str, count: int = 20, period: str = "D") -> list[dict]:
+        """일봉 데이터 조회 (최근 count일).
+
+        inquire-daily-itemchartprice (FHKST03010100) — 1회 호출 최대 100일.
+        100일을 초과하는 count 요청 시 시작일을 (count*1.6)일 전으로 잡아
+        영업일 기준으로 충분히 확보. 응답은 최신 → 과거 순.
+
+        과거 KIS 변경 이력: inquire-daily-price 응답이 output 단일 키로 변경되어
+        output2를 찾던 구버전 코드가 빈 리스트만 반환하던 버그가 있었음 — 본 메서드로 교체.
+        """
         self.ensure_token()
-        url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-price"
+        url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+        period = period.upper()
+        if period not in ("D", "W", "M"):
+            period = "D"
         today = datetime.now().strftime("%Y%m%d")
+        # 영업일 기준 60% 비율로 캘린더 윈도우 산정 (주말/공휴일 마진 포함)
+        factor = 8 if period == "W" else (35 if period == "M" else 1.6)
+        lookback_days = max(int(count * factor) + 10, 40)
+        start = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y%m%d")
         params = {
             "FID_COND_MRKT_DIV_CODE": "J",
             "FID_INPUT_ISCD": symbol,
-            "FID_PERIOD_DIV_CODE": "D",
-            "FID_ORG_ADJ_PRC": "0",
-            "FID_INPUT_DATE_1": "",
+            "FID_INPUT_DATE_1": start,
             "FID_INPUT_DATE_2": today,
+            "FID_PERIOD_DIV_CODE": period,
+            "FID_ORG_ADJ_PRC": "0",
         }
-        output = self._get_with_retry(url, self._headers("FHKST01010400"), params).get("output2", []) or []
+        resp = self._get_with_retry(url, self._headers("FHKST03010100"), params)
+        output = resp.get("output2") or []
         return output[:count]
 
-    def get_nxt_price(self, symbol: str) -> dict:
-        """NXT(야간) 현재가 조회."""
+    def get_intraday_candles(self, symbol: str, from_time: str = "090000") -> list[dict]:
+        """당일 분봉 데이터 조회. from_time(HHMMSS) 이후 체결 캔들 반환 (오래된순).
+
+        KIS 분봉 API는 FID_INPUT_HOUR_1 시각 이전의 제한된 개수만 반환하므로,
+        장중 전체 흐름을 보려면 기준 시각을 뒤로 옮겨가며 여러 번 조회해야 한다.
+        """
         self.ensure_token()
+        url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
+
+        def prev_second(hhmmss: str) -> str:
+            try:
+                dt = datetime.strptime(hhmmss, "%H%M%S") - timedelta(seconds=1)
+                return dt.strftime("%H%M%S")
+            except Exception:
+                return from_time
+
+        end_time = min(datetime.now().strftime("%H%M%S"), "153000")
+        if end_time < from_time:
+            end_time = "153000"
+
+        merged: dict[tuple[str, str], dict] = {}
+        target_date = ""
+        for _ in range(16):
+            params = {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": symbol,
+                "FID_INPUT_HOUR_1": end_time,
+                "FID_ETC_CLS_CODE": "0",
+                "FID_PW_DATA_INCU_YN": "Y",
+            }
+            output = self._get_with_retry(url, self._headers("FHKST03010200"), params).get("output2", []) or []
+            if not output:
+                break
+            if not target_date:
+                dates = [str(row.get("stck_bsop_date", "")) for row in output if row.get("stck_bsop_date")]
+                target_date = max(dates) if dates else ""
+            for row in output:
+                if target_date and str(row.get("stck_bsop_date", "")) != target_date:
+                    continue
+                tm = str(row.get("stck_cntg_hour", ""))
+                if tm >= from_time:
+                    key = (str(row.get("stck_bsop_date", "")), tm)
+                    merged[key] = row
+            times = sorted(str(row.get("stck_cntg_hour", "")) for row in output if row.get("stck_cntg_hour"))
+            if not times or times[0] <= from_time:
+                break
+            next_end = prev_second(times[0])
+            if next_end >= end_time:
+                break
+            end_time = next_end
+
+        return [merged[k] for k in sorted(merged)]
+
+    def get_nxt_price(self, symbol: str) -> dict:
+        """NXT(야간) 현재가 조회. NX 마켓코드로 조회 후 실패 시 KRX fallback."""
+        self.ensure_token()
+        url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/quotations/inquire-price"
+        params = {"FID_COND_MRKT_DIV_CODE": "NX", "FID_INPUT_ISCD": symbol}
+        result = self._get_with_retry(url, self._headers("FHKST01010100"), params).get("output", {})
+        if float(result.get("stck_prpr", 0) or 0) > 0:
+            return result
         return self.get_price(symbol)
 
     def is_nxt_supported(self, symbol: str) -> bool:
@@ -195,14 +296,37 @@ class KisClient:
     def _acnt_prdt_cd(self) -> str:
         return self.cfg.account_no[8:] if len(self.cfg.account_no) > 8 else "01"
 
+    def _is_token_expired_response(self, resp) -> bool:
+        """KIS 응답이 토큰 만료(EGW00123)인지 판별. 500/401 본문에 EGW00123."""
+        try:
+            data = resp.json()
+            if data.get("msg_cd") == "EGW00123":
+                return True
+            if "토큰" in (data.get("msg1") or "") and "만료" in (data.get("msg1") or ""):
+                return True
+        except Exception:
+            pass
+        return False
+
     def _post_order_with_retry(self, tr_id: str, body: dict, retries: int = 2) -> dict:
-        """주문 POST — 500 에러 시 재시도."""
+        """주문 POST — 500 에러 시 재시도. 토큰 만료(EGW00123) 응답이면 강제 재발급 후 1회 재시도."""
         url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/trading/order-cash"
         last_exc: Exception | None = None
+        token_refreshed = False
         for attempt in range(retries + 1):
             try:
                 hk = self._hashkey(body)
                 resp = self._client.post(url, headers=self._headers(tr_id, hashkey=hk), json=body)
+                # 토큰 서버 측 무효화 자동 복구 (500/401 + EGW00123)
+                if (resp.status_code in (401, 500)
+                        and not token_refreshed
+                        and self._is_token_expired_response(resp)):
+                    log.warning("주문 응답에 토큰 만료(EGW00123) → 강제 재발급 후 재시도")
+                    self._access_token = ""
+                    self._token_expires_at = datetime.min
+                    self._issue_token()
+                    token_refreshed = True
+                    continue
                 if resp.status_code == 500 and attempt < retries:
                     log.warning("주문 500 에러, 재시도 (%d/%d)", attempt + 1, retries)
                     time.sleep(1)
@@ -355,10 +479,65 @@ class KisClient:
             pass
         return 0
 
-    def get_today_executions(self, symbol: str) -> list[dict]:
+    def get_period_profit(self, start_date: str, end_date: str, symbol: str = "") -> dict:
+        """기간별손익일별합산조회.
+
+        KIS HTS [0856] 기간별 매매손익의 "일별" 화면에 해당한다. 대시보드의
+        오늘 실현손익은 자체 재계산보다 이 증권사 원장값을 우선 사용한다.
+        """
+        self.ensure_token()
+        tr_id = "VTTC8708R" if self._is_mock else "TTTC8708R"
+        url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/trading/inquire-period-profit"
+        params = {
+            "CANO": self.cfg.account_no[:8],
+            "ACNT_PRDT_CD": self._acnt_prdt_cd(),
+            "INQR_STRT_DT": start_date,
+            "INQR_END_DT": end_date,
+            "SORT_DVSN": "00",
+            "INQR_DVSN": "00",
+            "CBLC_DVSN": "00",
+            "PDNO": symbol or "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+        try:
+            return self._get_with_retry(url, self._headers(tr_id), params)
+        except Exception as e:
+            log.warning("기간별손익 조회 실패 [%s~%s %s]: %s", start_date, end_date, symbol or "ALL", e)
+            return {}
+
+    def get_period_trade_profit(self, start_date: str, end_date: str, symbol: str = "") -> dict:
+        """기간별매매손익현황조회.
+
+        KIS HTS [0856] 기간별 매매손익의 "종목별" 화면에 해당한다.
+        """
+        self.ensure_token()
+        tr_id = "VTTC8715R" if self._is_mock else "TTTC8715R"
+        url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/trading/inquire-period-trade-profit"
+        params = {
+            "CANO": self.cfg.account_no[:8],
+            "ACNT_PRDT_CD": self._acnt_prdt_cd(),
+            "SORT_DVSN": "00",
+            "INQR_STRT_DT": start_date,
+            "INQR_END_DT": end_date,
+            "CBLC_DVSN": "00",
+            "PDNO": symbol or "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+        try:
+            return self._get_with_retry(url, self._headers(tr_id), params)
+        except Exception as e:
+            log.warning("기간별매매손익 조회 실패 [%s~%s %s]: %s", start_date, end_date, symbol or "ALL", e)
+            return {}
+
+    def get_today_executions(self, symbol: str = "") -> list[dict]:
         """오늘 체결 내역 조회 (매수+매도).
 
+        symbol을 비우면 계좌의 오늘 전체 체결을 조회한다.
+
         반환 필드 주요값:
+          pdno           : 종목코드
           sll_buy_dvsn_cd: "01"=매도, "02"=매수
           tot_ccld_qty   : 총체결수량
           avg_prvs       : 체결평균가
@@ -368,26 +547,57 @@ class KisClient:
         tr_id = "VTTC8001R" if self._is_mock else "TTTC8001R"
         url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
         today = datetime.now().strftime("%Y%m%d")
-        params = {
+        base_params = {
             "CANO": self.cfg.account_no[:8],
             "ACNT_PRDT_CD": self._acnt_prdt_cd(),
             "INQR_STRT_DT": today,
             "INQR_END_DT": today,
             "SLL_BUY_DVSN_CD": "00",   # 전체
             "INQR_DVSN": "00",
-            "PDNO": symbol,
+            "PDNO": symbol or "",
             "CCLD_DVSN": "01",         # 체결만 (미체결 제외)
             "ORD_GNO_BRNO": "",
             "ODNO": "",
             "INQR_DVSN_3": "00",
             "INQR_DVSN_1": "",
-            "CTX_AREA_FK100": "",
-            "CTX_AREA_NK100": "",
         }
         try:
-            return self._get_with_retry(url, self._headers(tr_id), params).get("output1", []) or []
+            rows: list[dict] = []
+            fk = ""
+            nk = ""
+            seen_pages: set[tuple[str, str]] = set()
+            for _ in range(10):
+                params = dict(base_params)
+                params["CTX_AREA_FK100"] = fk
+                params["CTX_AREA_NK100"] = nk
+                data = self._get_with_retry(url, self._headers(tr_id), params)
+                rows.extend(data.get("output1", []) or [])
+                next_fk = str(data.get("ctx_area_fk100") or "").strip()
+                next_nk = str(data.get("ctx_area_nk100") or "").strip()
+                page_key = (next_fk, next_nk)
+                if not next_fk and not next_nk:
+                    break
+                if page_key in seen_pages:
+                    break
+                seen_pages.add(page_key)
+                fk, nk = next_fk, next_nk
+            deduped: list[dict] = []
+            seen_rows: set[tuple[str, str, str, str, str]] = set()
+            for row in rows:
+                row_key = (
+                    str(row.get("ord_dt") or ""),
+                    str(row.get("ord_tmd") or ""),
+                    str(row.get("odno") or ""),
+                    str(row.get("pdno") or ""),
+                    str(row.get("sll_buy_dvsn_cd") or ""),
+                )
+                if row_key in seen_rows:
+                    continue
+                seen_rows.add(row_key)
+                deduped.append(row)
+            return deduped
         except Exception as e:
-            log.warning("[%s] 체결 내역 조회 실패: %s", symbol, e)
+            log.warning("[%s] 체결 내역 조회 실패: %s", symbol or "ALL", e)
             return []
 
     def get_positions(self) -> list[dict]:

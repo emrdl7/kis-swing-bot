@@ -34,6 +34,10 @@
   <dict>
     <key>PYTHONUNBUFFERED</key>
     <string>1</string>
+    <key>CODEX_BIN</key>
+    <string>/usr/local/bin/codex</string>
+    <key>GEMINI_BIN</key>
+    <string>/usr/local/bin/gemini</string>
     <key>PYTHONPATH</key>
     <string>/Users/johyeonchang/services/kis-swing-bot</string>
   </dict>

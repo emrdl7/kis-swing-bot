@@ -28,8 +28,8 @@
   <dict>
     <key>PYTHONUNBUFFERED</key>
     <string>1</string>
-    <key>CLAUDE_BIN</key>
-    <string>/Users/johyeonchang/.local/bin/claude</string>
+    <key>CODEX_BIN</key>
+    <string>/usr/local/bin/codex</string>
     <key>GEMINI_BIN</key>
     <string>/usr/local/bin/gemini</string>
     <key>PYTHONPATH</key>

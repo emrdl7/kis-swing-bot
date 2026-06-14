@@ -3,130 +3,177 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-  <title>KIS Swing Bot</title>
-  <link rel="stylesheet" href="/static/style.css?v=10">
+  <title>KIS 스윙 대시보드</title>
+  <link rel="stylesheet" href="/static/style.css?v=47">
 </head>
 <body>
-  <h1>KIS Swing Bot
-    <button class="theme-toggle" onclick="toggleTheme()">테마</button>
-    <button id="rescreen-btn" class="btn-rescreen" onclick="triggerRescreen()">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-        <path d="M11 8v3l2 2"/>
-      </svg>
-      지금 재토론
-    </button>
-  </h1>
-  <div class="meta">마지막 갱신: <span id="updated-at">{{ updated_at }}</span> &nbsp;·&nbsp; <span id="live-status" style="color:#00c9a7">● LIVE</span> (SSE 실시간) &nbsp;·&nbsp; <span id="rescreen-msg" style="color:#888"></span></div>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <div>
+        <h1>KIS 스윙 대시보드</h1>
+        <div class="meta">
+          <span id="live-status">LIVE</span>
+          <span>갱신 <span id="updated-at">{{ updated_at }}</span></span>
+          <span id="rescreen-msg"></span>
+        </div>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button id="entry-pause-btn" class="text-btn {% if entry_paused %}paused{% endif %}" onclick="toggleEntryPause()" title="자동 신규 매수 정지/재개">
+        <span id="entry-pause-icon">{% if entry_paused %}▶{% else %}⏸{% endif %}</span>
+        <span id="entry-pause-label">{% if entry_paused %}자동매수 재개{% else %}자동매수 정지{% endif %}</span>
+      </button>
+      <button class="icon-btn" onclick="refreshNow()" title="새로고침">↻</button>
+      <button class="icon-btn" onclick="toggleTheme()" title="테마 전환">◐</button>
+    </div>
+  </header>
 
-  <div class="summary">
-    <div class="card">
-      <div class="card-label">오늘 실현손익</div>
-      <div class="card-value" id="daily-pnl" style="color:{{ s.pnl_color }}">{{ '{:+,}'.format(s.daily_pnl) }}원</div>
-    </div>
-    <div class="card">
-      <div class="card-label">미실현손익</div>
-      <div class="card-value" id="unrealized-pnl" style="color:{{ s.unr_color }}">{{ '{:+,}'.format(s.unrealized_pnl) }}원</div>
-    </div>
-    <div class="card">
-      <div class="card-label">보유 포지션</div>
-      <div class="card-value" id="active-count">{{ s.active_count }}종목</div>
-    </div>
-    <div class="card">
-      <div class="card-label">오늘 청산</div>
-      <div class="card-value" id="closed-count">{{ s.closed_count }}건</div>
-    </div>
-    <div class="card">
-      <div class="card-label">감시 후보</div>
-      <div class="card-value" id="cand-count">{{ s.cand_count }}종목</div>
-    </div>
-    <div class="card">
-      <div class="card-label">예수금 총액</div>
-      <div class="card-value" id="account-cash">{{ '{:,}'.format(s.account_cash) }}원</div>
-    </div>
-    <div class="card">
-      <div class="card-label">주문가능액</div>
-      <div class="card-value" id="order-cash">{{ '{:,}'.format(s.order_cash) }}원</div>
-    </div>
-    <div class="card">
-      <div class="card-label">유가평가액</div>
-      <div class="card-value" id="eval-amt">{{ '{:,}'.format(s.eval_amt) }}원</div>
-    </div>
-    <div class="card">
-      <div class="card-label">총평가금액</div>
-      <div class="card-value" id="total-eval">{{ '{:,}'.format(s.total_eval) }}원</div>
-    </div>
-    <div class="card">
-      <div class="card-label">승률</div>
-      <div class="card-value" id="win-rate" style="color:#3b82f6">{{ '%.1f'|format(s.win_rate) }}% <small class="text-muted">({{ s.wins }}/{{ s.total_trades }})</small></div>
-    </div>
-    <div class="card">
-      <div class="card-label">총 실현손익</div>
-      <div class="card-value" id="total-realized" style="color:{{ s.total_realized_color }}">{{ '{:+,}'.format(s.total_realized) }}원</div>
-    </div>
+  <div id="pause-banner" class="pause-banner" style="{% if not entry_paused %}display:none;{% endif %}">
+    <strong>자동 신규 매수 정지 중</strong>
+    <span>기존 보유분 감시와 매도 로직은 계속 작동합니다.</span>
+    <button class="text-btn" onclick="toggleEntryPause()">재개</button>
   </div>
 
-  <div class="strat-grid" id="strategy-cards">{{ strategy_html|safe }}</div>
+  <main class="dashboard">
+    <section class="metrics account-strip" aria-label="핵심 계좌 지표">
+      <div class="metric primary">
+        <span class="metric-label">총평가</span>
+        <strong id="total-eval">{{ '{:,}'.format(s.total_eval) }}원</strong>
+      </div>
+      <div class="metric">
+        <span class="metric-label">주문가능</span>
+        <strong id="order-cash">{{ '{:,}'.format(s.order_cash) }}원</strong>
+      </div>
+      <div class="metric">
+        <span class="metric-label">오늘 PnL</span>
+        <strong id="daily-pnl" style="color:{{ s.pnl_color }}">{{ '{:+,}'.format(s.daily_pnl) }}원</strong>
+        <small id="daily-pnl-meta" class="metric-hint">{{ s.pnl_source_label or '손익 원장 확인' }}</small>
+      </div>
+      <div class="metric">
+        <span class="metric-label">미실현 손익</span>
+        <strong id="unrealized-pnl" style="color:{{ s.unr_color }}">{{ '{:+,}'.format(s.unrealized_pnl) }}원</strong>
+        <small id="unrealized-pnl-meta" class="metric-hint">{{ s.unrealized_source_label or 'KIS 보유평가' }}</small>
+      </div>
+    </section>
 
-  <section>
-    <h2>보유 포지션</h2>
-    <div class="table-wrap">
-    <table>
-      <thead><tr>
-        <th>종목</th><th>수량</th><th>매수가</th><th>현재가</th><th>수익률 / 손익</th><th>상태</th>
-        <th class="hide-mobile">목표가</th><th class="hide-mobile">손절가</th><th class="hide-mobile">트레일링</th><th></th>
-      </tr></thead>
-      <tbody id="positions-tbody">{{ positions_html|safe }}</tbody>
-    </table>
-    </div>
-  </section>
+    <section class="section market-command">
+      <div class="section-head market-command-head">
+        <div>
+          <h2>시장 상황판</h2>
+          <span class="section-note">지수·주도 섹터·회피 리스크·거래대금</span>
+        </div>
+        <span class="market-clock">KST 기준</span>
+      </div>
+      <div id="market-overview">{{ market_overview_html|safe }}</div>
+    </section>
 
-  <section>
-    <h2>감시 후보</h2>
-    <div class="table-wrap">
-    <table>
-      <thead><tr>
-        <th>종목</th><th>현재가</th><th>진입구간</th><th>신뢰도</th><th>진입여부</th>
-        <th class="hide-mobile">목표가</th><th class="hide-mobile">손절가</th><th class="hide-mobile">만료</th><th></th>
-      </tr></thead>
-      <tbody id="candidates-tbody">{{ candidates_html|safe }}</tbody>
-    </table>
-    </div>
-  </section>
+    <section class="section account-ledger">
+      <div class="section-head">
+        <h2>손익 검증</h2>
+        <span class="section-note">원장 기준과 종목별 근거</span>
+      </div>
+      <div id="account-ledger">{{ account_ledger_html|safe }}</div>
+    </section>
 
-  <section>
-    <h2>오늘 청산 내역</h2>
-    <div class="table-wrap">
-    <table>
-      <thead><tr>
-        <th>종목</th><th>매수가</th><th>매도가</th><th>수익률</th><th>손익</th><th>사유</th>
-      </tr></thead>
-      <tbody id="closed-tbody">{{ closed_html|safe }}</tbody>
-    </table>
-    </div>
-  </section>
+    <section class="section selection-brief">
+      <div class="section-head">
+        <h2>선정 브리핑</h2>
+        <span class="section-note">매수 후보 우선순위</span>
+      </div>
+      <div id="selection-pipeline">{{ selection_pipeline_html|safe }}</div>
+      <div id="selection-briefing" class="selection-grid">{{ selection_briefing_html|safe }}</div>
+    </section>
 
-  <section>
-    <h2>최근 14일 성과</h2>
-    <div class="panel" id="chart-panel">{{ chart_html|safe }}</div>
-  </section>
+    <section class="section candidate-radar">
+      <div class="section-head">
+        <h2>매수 후보 레이더</h2>
+        <button class="text-btn" id="rescreen-btn" onclick="triggerRescreen()">재토론</button>
+      </div>
+      <table class="candidate-table">
+        <thead>
+          <tr><th>종목</th><th>상태</th><th>가격</th><th>신뢰/RR</th><th>선정 근거</th></tr>
+        </thead>
+        <tbody id="candidate-radar-tbody">{{ candidate_radar_html|safe }}</tbody>
+      </table>
+    </section>
 
-  <div class="bottom-grid">
-    <div class="panel">
-      <div class="panel-title">최근 이벤트</div>
-      <div id="events-panel" style="max-height:300px;overflow-y:auto;overflow-x:hidden">{{ events_html|safe }}</div>
-    </div>
-    <div class="panel">
-      <div class="panel-title">봇 상태</div>
-      <div id="bot-panel">{{ bot_html|safe }}</div>
-    </div>
-  </div>
+    <section class="section candidates-ledger-container">
+      <div class="section-head">
+        <h2>후보 원장</h2>
+        <span class="section-note">기존 테이블</span>
+      </div>
+      <table class="compact-table">
+        <thead>
+          <tr><th>종목</th><th>현재/진입</th><th>신뢰/목표</th><th></th></tr>
+        </thead>
+        <tbody id="candidates-tbody">{{ candidates_html|safe }}</tbody>
+      </table>
+    </section>
 
-  <button class="fab" onclick="refreshNow()">&#x21bb;</button>
-  <div class="refresh">SSE 실시간 · <span id="fetch-count">0</span> updates</div>
+    <section class="section watchlist-container">
+      <div class="section-head">
+        <h2>관찰 후보</h2>
+        <span class="section-note">피봇 게이트</span>
+      </div>
+      <table class="compact-table">
+        <thead>
+          <tr><th>종목</th><th>현재/기준</th><th>거래량</th><th>상태</th></tr>
+        </thead>
+        <tbody id="watchlist-tbody">{{ watchlist_html|safe }}</tbody>
+      </table>
+    </section>
 
-  <!-- 에이전트 분석 모달 -->
-  <div id="agent-modal" class="modal-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;background:rgba(0,0,0,.65);align-items:center;justify-content:center;padding:16px">
+    <section class="section holdings">
+      <div class="section-head holdings-head">
+        <div>
+          <h2>보유 현황</h2>
+          <span class="section-note">실제 잔고 기준 확인용</span>
+        </div>
+        <div class="holdings-tools" role="group" aria-label="보유현황 정렬">
+          <button class="sort-chip active" type="button" data-holdings-sort="value">금액순</button>
+          <button class="sort-chip" type="button" data-holdings-sort="pnl">수익률순</button>
+        </div>
+      </div>
+      <table class="compact-table">
+        <thead>
+          <tr><th>종목</th><th>수량/매수</th><th>현재/손익</th><th>기준가</th><th></th></tr>
+        </thead>
+        <tbody id="positions-tbody">{{ positions_html|safe }}</tbody>
+      </table>
+    </section>
+
+    <aside class="side-stack">
+      <section class="section auto-state">
+        <div class="section-head">
+          <h2>자동매매 상태</h2>
+          <span class="section-note">감시·발굴 프로세스</span>
+        </div>
+        <div id="bot-panel" class="status-panel">{{ bot_html|safe }}</div>
+      </section>
+
+      <section class="section sell-locks">
+        <div class="section-head">
+          <h2>매도 금지</h2>
+          <span class="section-note">자동 매도 차단</span>
+        </div>
+        <div class="blacklist-add">
+          <input type="text" id="blacklist-symbol-input" class="bl-input" placeholder="종목코드 6자리" maxlength="6" inputmode="numeric">
+          <button class="text-btn" onclick="addSellBlacklist()">추가</button>
+        </div>
+        <div class="table-wrap">
+          <table class="blacklist-table">
+            <thead>
+              <tr><th>종목</th><th>등록</th><th></th></tr>
+            </thead>
+            <tbody id="sell-blacklist-tbody">{{ sell_blacklist_html|safe }}</tbody>
+          </table>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <div id="agent-modal" class="modal-overlay" style="display:none">
     <div class="modal-box">
       <div class="modal-header">
         <span id="modal-title">에이전트 분석</span>
@@ -136,6 +183,30 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=6"></script>
+  <div id="stock-chart-modal" class="modal-overlay chart-modal" style="display:none">
+    <div class="modal-box chart-modal-box">
+      <div class="modal-header chart-modal-header">
+        <div class="chart-modal-title">
+          <span id="stock-chart-title">종목 차트</span>
+          <small id="stock-chart-note">보유·후보에서 차트 선택</small>
+        </div>
+        <button class="modal-close" data-action="close-chart-modal" style="touch-action:manipulation">✕</button>
+      </div>
+      <div class="chart-toolbar" id="stock-chart-toolbar" style="display:none">
+        <span id="stock-chart-meta" class="chart-meta"></span>
+        <div class="chart-intervals" role="group" aria-label="차트 주기">
+          <button class="chart-interval-btn active" data-chart-interval="intraday">분봉</button>
+          <button class="chart-interval-btn" data-chart-interval="daily">일봉</button>
+          <button class="chart-interval-btn" data-chart-interval="weekly">주봉</button>
+        </div>
+      </div>
+      <div id="stock-chart-empty" class="empty-state" style="display:none"></div>
+      <div id="stock-chart-error" class="chart-error" style="display:none"></div>
+      <div id="stock-chart-canvas" class="stock-chart-canvas" style="display:none"></div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="/static/app.js?v=47"></script>
 </body>
 </html>

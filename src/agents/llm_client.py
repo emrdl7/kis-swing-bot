@@ -1,8 +1,4 @@
-"""LLM 클라이언트 — primary LLM 선택 + 교차 fallback.
-
-primary="claude" → Claude 시도 → Gemini fallback
-primary="gemini" → Gemini 시도 → Claude fallback
-"""
+"""LLM 클라이언트 — Codex/Gemini primary 선택 + 교차 fallback."""
 from __future__ import annotations
 import logging
 import os
@@ -13,32 +9,32 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "claude-opus-4-6"
 DEFAULT_TIMEOUT = 120.0
 DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
-
-
-def _claude_bin() -> str:
-    return str(os.getenv("CLAUDE_BIN", "claude")).strip() or "claude"
+DEFAULT_CODEX_MODEL = ""  # ChatGPT 구독 계정에서는 -m 생략이 필요
 
 
 def _gemini_bin() -> str:
     return str(os.getenv("GEMINI_BIN", "gemini")).strip() or "gemini"
 
 
+def _codex_bin() -> str:
+    return str(os.getenv("CODEX_BIN", "codex")).strip() or "codex"
+
+
 class LLMClient:
     def __init__(
         self,
-        model: str = DEFAULT_MODEL,
         max_tokens: int = 2000,
         timeout: float = DEFAULT_TIMEOUT,
         gemini_model: str = DEFAULT_GEMINI_MODEL,
-        primary: str = "claude",  # "claude" or "gemini"
+        codex_model: str = DEFAULT_CODEX_MODEL,
+        primary: str = "codex",  # "codex" | "gemini"
     ):
-        self.model = model
         self.max_tokens = max_tokens
         self.timeout = timeout
         self.gemini_model = gemini_model
+        self.codex_model = codex_model
         self.primary = primary
 
     def chat(self, system: str, user: str, max_tokens: Optional[int] = None) -> str:
@@ -74,15 +70,16 @@ class LLMClient:
     def _call(self, prompt: str, system: str = "") -> str:
         if self.primary == "gemini":
             return self._call_gemini_first(prompt, system)
-        return self._call_claude_first(prompt, system)
+        return self._call_codex_first(prompt, system)
 
-    def _call_claude_first(self, prompt: str, system: str) -> str:
-        text = self._call_claude(prompt, system)
+    def _call_codex_first(self, prompt: str, system: str) -> str:
+        """Codex 우선, 실패 시 Gemini."""
+        text = self._call_codex(prompt, system)
         if text:
             return text
         gbin = _gemini_bin()
         if self._bin_available(gbin):
-            log.warning("Claude 실패 → Gemini fallback 시도")
+            log.warning("Codex 실패 → Gemini fallback 시도")
             text = self._call_gemini(prompt, system)
             if text:
                 return text
@@ -97,41 +94,78 @@ class LLMClient:
             text = self._call_gemini(prompt, system)
             if text:
                 return text
-            log.warning("Gemini 실패 → Claude fallback 시도")
+            log.warning("Gemini 실패 → Codex fallback 시도")
         else:
-            log.warning("Gemini 바이너리 없음 → Claude로 직접 시도")
-        text = self._call_claude(prompt, system)
+            log.warning("Gemini 바이너리 없음 → Codex로 직접 시도")
+        text = self._call_codex(prompt, system)
         if text:
             return text
-        log.error("Claude fallback 도 실패")
+        log.error("Codex fallback 도 실패")
         return ""
 
-    def _call_claude(self, prompt: str, system: str) -> str:
-        cmd = [_claude_bin(), "-p", prompt, "--model", self.model]
-        if system:
-            cmd += ["--append-system-prompt", system]
+    def _call_codex(self, prompt: str, system: str) -> str:
+        """Codex CLI(`codex exec`) 비대화형 호출.
+
+        - codex는 `--append-system-prompt` 같은 시스템 프롬프트 옵션이 없어
+          system을 본문 상단에 합성. (gemini와 동일 패턴)
+        - launchd 환경에서 PATH 격리 대응을 위해 /usr/local/bin 명시.
+        - 응답에서 codex CLI 내부 메타라인(thinking, usage 등) 제거.
+        """
+        full_prompt = f"[SYSTEM]\n{system}\n\n[USER]\n{prompt}" if system else prompt
+        cmd = [_codex_bin(), "exec", "--skip-git-repo-check"]
+        # codex_model 비어있으면 -m 생략 → ChatGPT 계정 default 모델 사용
+        # (ChatGPT 계정은 'gpt-5' 등 명시 모델명 거부함)
+        if self.codex_model:
+            cmd += ["-m", self.codex_model]
+        cmd += [full_prompt]
+        env = os.environ.copy()
+        env["PATH"] = "/usr/local/bin:/usr/bin:/bin:" + env.get("PATH", "")
         for attempt in range(2):
             try:
                 result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=self.timeout,
+                    cmd, capture_output=True, text=True, timeout=self.timeout, env=env,
                 )
                 if result.returncode != 0:
                     err = (result.stderr or "").strip()
-                    log.warning("claude rc=%d: %s", result.returncode, err[:200])
-                    return ""  # 즉시 fallback (재시도는 gemini로)
-                text = (result.stdout or "").strip()
-                if not text:
-                    log.warning("claude 빈 응답")
+                    log.warning("codex rc=%d: %s", result.returncode, err[:200])
+                    if attempt == 0:
+                        time.sleep(2)
+                        continue
                     return ""
+                text = self._strip_codex_noise(result.stdout or "")
+                if not text:
+                    log.warning("codex 빈 응답")
+                    return ""
+                log.info("Codex 응답 길이=%d", len(text))
                 return text
             except subprocess.TimeoutExpired:
-                log.warning("claude 타임아웃 (attempt %d)", attempt + 1)
+                log.warning("codex 타임아웃 (attempt %d)", attempt + 1)
                 if attempt == 0:
                     time.sleep(2)
             except Exception as e:
-                log.warning("claude 예외: %s", e)
+                log.warning("codex 예외: %s", e)
                 return ""
         return ""
+
+    @staticmethod
+    def _strip_codex_noise(raw: str) -> str:
+        """codex exec 출력의 메타라인(타임스탬프, OpenAI 사용량 등) 제거.
+
+        codex exec는 보통 stderr에 메타정보를 보내고 stdout에 본문만 출력하지만,
+        일부 버전에서 stdout 머리·꼬리에 [INFO]/[USAGE]/timestamps 같은 라인을
+        섞어내는 경우가 있어 안전하게 거름.
+        """
+        noise_starts = (
+            "[INFO]", "[WARN]", "[ERROR]", "[DEBUG]", "[USAGE]", "[TOOL_USE]",
+            "OpenAI usage:", "tokens used:", "Model:", "Reasoning:",
+        )
+        cleaned = []
+        for line in raw.splitlines():
+            stripped = line.lstrip()
+            if any(stripped.startswith(p) for p in noise_starts):
+                continue
+            cleaned.append(line)
+        return "\n".join(cleaned).strip()
 
     @staticmethod
     def _strip_gemini_noise(raw: str) -> str:

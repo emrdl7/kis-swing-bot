@@ -8,6 +8,7 @@ venv/
 *.log
 config/.env
 state/*.json
+state/chart_cache/
 logs/
 .DS_Store
 *.swp

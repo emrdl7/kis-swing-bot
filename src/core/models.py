@@ -20,7 +20,7 @@ class CloseReason(str, Enum):
     EOD = "EOD"
     MANUAL = "MANUAL"
     RECONCILE_KIS_ZERO = "RECONCILE_KIS_ZERO"  # KIS 잔고 0 → ghost position 자동 정리
-    CLOSING_BET_MORNING = "CLOSING_BET_MORNING"  # 종가배팅 익일 오전 매도
+    REVIEW_SELL = "REVIEW_SELL"  # 일일 포지션 재평가 — 재료 소멸/지표 비관 → 청산
 
 
 @dataclass
@@ -153,9 +153,15 @@ class SwingPosition:
     close_price: Optional[float] = None
     close_time: Optional[datetime] = None
     order_id: Optional[str] = None
-    strategy: str = "swing"              # "swing" or "closing_bet"
+    strategy: str = "swing"              # "swing" or "manual"
     rationale: Optional[str] = None      # 진입 당시 선정 근거
+    tags: list[str] = field(default_factory=list)  # 진입 당시 태그 (테마/섹터)
     agent_opinions: Optional[list] = None  # 진입 당시 에이전트별 의견
+    # ── 일일 포지션 재평가 결과 ──
+    review_decision: Optional[str] = None         # "SELL" | "HOLD" | None
+    review_conviction: Optional[float] = None     # 0.0~1.0
+    review_rationale: Optional[str] = None        # 판정 근거
+    review_decided_at: Optional[datetime] = None  # 판정 시각
 
     @property
     def cost_basis(self) -> float:
@@ -184,7 +190,12 @@ class SwingPosition:
             "order_id": self.order_id,
             "strategy": self.strategy,
             "rationale": self.rationale,
+            "tags": self.tags,
             "agent_opinions": self.agent_opinions,
+            "review_decision": self.review_decision,
+            "review_conviction": self.review_conviction,
+            "review_rationale": self.review_rationale,
+            "review_decided_at": self.review_decided_at.isoformat() if self.review_decided_at else None,
         }
 
     @classmethod
@@ -193,9 +204,15 @@ class SwingPosition:
         d["entry_time"] = datetime.fromisoformat(d.get("entry_time", datetime.now().isoformat()))
         d["state"] = PositionState(d.get("state", PositionState.ENTERED.value))
         if d.get("close_reason"):
-            d["close_reason"] = CloseReason(d["close_reason"])
+            try:
+                d["close_reason"] = CloseReason(d["close_reason"])
+            except ValueError:
+                # 과거 enum 값(예: 종가배팅 매도)이 제거된 경우 MANUAL로 폴백
+                d["close_reason"] = CloseReason.MANUAL
         if d.get("close_time"):
             d["close_time"] = datetime.fromisoformat(d["close_time"])
+        if d.get("review_decided_at"):
+            d["review_decided_at"] = datetime.fromisoformat(d["review_decided_at"])
         known = {f.name for f in cls.__dataclass_fields__.values()}
         d = {k: v for k, v in d.items() if k in known}
         return cls(**d)

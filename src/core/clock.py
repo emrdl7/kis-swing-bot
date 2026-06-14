@@ -34,6 +34,20 @@ def now_kst() -> datetime:
     return datetime.now(KST).replace(tzinfo=None)
 
 
+_WEEKDAY_KR = "월화수목금토일"
+
+
+def today_label(dt: datetime | None = None) -> str:
+    """LLM 프롬프트용 날짜 라벨: '2026-05-04 (월요일, KST)'.
+
+    LLM이 요일을 추측하지 않도록 명시적으로 요일·시간대 표기. 날짜 비교나
+    파일명에는 쓰지 말 것 — 그 용도엔 now_kst().strftime('%Y-%m-%d') 사용.
+    """
+    n = dt or now_kst()
+    wk = _WEEKDAY_KR[n.weekday()]
+    return f"{n.strftime('%Y-%m-%d')} ({wk}요일, KST)"
+
+
 def is_regular_market(dt: datetime | None = None) -> bool:
     """정규장 여부 (09:00 ~ 15:30)."""
     t = (dt or now_kst()).time()
@@ -53,7 +67,7 @@ def is_trading_day(dt: datetime | None = None) -> bool:
 
 
 def is_next_trading_day(dt: datetime | None = None) -> bool:
-    """내일이 거래일(영업일)인지 확인. 비영업일 전날 종가배팅 차단에 사용."""
+    """내일이 거래일(영업일)인지 확인."""
     d = (dt or now_kst()).date()
     tomorrow = d + timedelta(days=1)
     # 주말이거나 공휴일이면 False, 연속 확인 (예: 목→금→월)
@@ -65,23 +79,6 @@ def is_next_trading_day(dt: datetime | None = None) -> bool:
     return False
 
 
-def is_closing_bet_entry(dt: datetime | None = None,
-                         from_hhmm: int = 1520, to_hhmm: int = 1525) -> bool:
-    """종가배팅 매수 허용 시간 (기본 15:20~15:25). 비영업일 전날은 차단."""
-    dt = dt or now_kst()
-    if not is_next_trading_day(dt):
-        return False
-    t = dt.time()
-    return hhmm_to_time(from_hhmm) <= t <= hhmm_to_time(to_hhmm)
-
-
-def is_closing_bet_sell_time(dt: datetime | None = None,
-                              sell_before_hhmm: int = 1000) -> bool:
-    """종가배팅 익일 매도 시간 (09:05 ~ sell_before)."""
-    t = (dt or now_kst()).time()
-    return ENTRY_ALLOWED_FROM <= t <= hhmm_to_time(sell_before_hhmm)
-
-
 def hhmm_to_time(hhmm: int) -> time:
     return time(hhmm // 100, hhmm % 100)
 
@@ -90,13 +87,6 @@ def is_pre_market(dt: datetime | None = None) -> bool:
     """장 전 (08:00 ~ 09:00)."""
     t = (dt or now_kst()).time()
     return PRE_MARKET_OPEN <= t < MARKET_OPEN
-
-
-def is_pre_market_sell_window(dt: datetime | None = None,
-                                from_hhmm: int = 800, to_hhmm: int = 855) -> bool:
-    """NXT 프리장 CB 매도 감시 시간대."""
-    t = (dt or now_kst()).time()
-    return hhmm_to_time(from_hhmm) <= t <= hhmm_to_time(to_hhmm)
 
 
 def is_open_call_auction(dt: datetime | None = None) -> bool:
